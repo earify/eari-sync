@@ -40,10 +40,9 @@ Dependency: Let's Encrypt (external CA). Disclosed per spec.
 - Check public IP vs router WAN IP. If different → CGNAT. Options without external services: request public IP from ISP, or use a different inbound port (Let's Encrypt HTTP-01 still needs 80; use DNS-01 only if DNS provider API available — ipTIME DDNS usually not).
 - If only port 80 blocked but 443 open, Mode B self-signed works over 443/8443 without CA dependency.
 
-## NAT Loopback verification
+## NAT Loopback verification (VERIFIED 2026-10-23)
 
-From inside LAN, run:
-```bash
-curl -v https://your-ddns-domain:8443/health
-```
-If it fails but external works, router lacks NAT loopback. Options: use router's LAN IP directly for local clients (requires manual switching — violates unified address goal) or replace router. Documented limitation.
+Verified working: `https://eari.iptime.org:8443/health` from inside LAN (PC + phone) and from external nodes. ipTIME port forwarding: TCP 8443 -> phone:8443.
+
+- `curl.exe` (Windows schannel) hard-fails revocation checks on private CAs without CRL; add `--ssl-no-revoke`. Browsers/Electron (Obsidian) soft-fail and trust the CA from the Windows user store.
+- Android/iOS Obsidian clients must install `ca.crt` into the device trust store for verification to pass.
