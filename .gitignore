@@ -5,6 +5,7 @@ plugin/main.js
 plugin/*.map
 .env
 *.log
+*.tsbuildinfo
 eari-sync-data/
 release/
 .DS_Store
