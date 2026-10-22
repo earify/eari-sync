@@ -8,6 +8,7 @@ plugin/*.map
 *.tsbuildinfo
 eari-sync-data/
 release/
+eari-ca.crt
 .DS_Store
 Thumbs.db
 scr.png
