@@ -1,0 +1,11 @@
+node_modules/
+shared/dist/
+server/dist/
+plugin/main.js
+plugin/*.map
+.env
+*.log
+eari-sync-data/
+release/
+.DS_Store
+Thumbs.db

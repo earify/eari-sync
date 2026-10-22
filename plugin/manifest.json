@@ -1,0 +1,10 @@
+{
+  "id": "eari-sync",
+  "name": "eari-sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Self-hosted Obsidian sync via your own Termux server",
+  "author": "Vibe",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
