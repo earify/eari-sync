@@ -37,7 +37,15 @@ function getSecret(req: any): string {
 }
 
 export async function buildServer(cfg: RuntimeConfig, db: Db) {
-  const app = Fastify({ logger: { level: cfg.logLevel }, bodyLimit: 1024 * 1024 * 1024 });
+  let httpsOpts: any;
+  if (cfg.certPath && cfg.keyPath && existsSync(cfg.certPath) && existsSync(cfg.keyPath)) {
+    const { readFileSync } = await import("node:fs");
+    httpsOpts = { cert: readFileSync(cfg.certPath), key: readFileSync(cfg.keyPath) };
+    console.log("HTTPS enabled using", cfg.certPath);
+  } else {
+    console.warn("WARNING: no TLS cert configured; running HTTP (dev only). Set EARI_SYNC_CERT/EARI_SYNC_KEY for HTTPS.");
+  }
+  const app = Fastify({ logger: { level: cfg.logLevel }, bodyLimit: 1024 * 1024 * 1024, https: httpsOpts });
 
   await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
   await app.register(websocket);
