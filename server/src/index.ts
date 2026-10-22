@@ -39,7 +39,7 @@ function getSecret(req: any): string {
 export async function buildServer(cfg: RuntimeConfig, db: Db) {
   const app = Fastify({ logger: { level: cfg.logLevel }, bodyLimit: 1024 * 1024 * 1024 });
 
-  await app.register(rateLimit, { max: 300, timeWindow: "1 minute" });
+  await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
   await app.register(websocket);
   await app.register(multipart, { limits: { fileSize: 1024 * 1024 * 1024 } });
 
@@ -51,8 +51,8 @@ export async function buildServer(cfg: RuntimeConfig, db: Db) {
   // health
   app.get("/health", async () => ({ ok: true, time: Date.now() }));
 
-  // auth test
-  app.post("/api/v1/auth/test", async (req, reply) => {
+  // auth test — stricter rate limit (brute-force protection)
+  app.post("/api/v1/auth/test", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     const vaultId = (req.headers["x-vault-id"] as string) || (req.body as any)?.vaultId;
     const secret = getSecret(req) || (req.body as any)?.secret;
     const clientId = req.headers["x-client-id"] as string;
