@@ -1,4 +1,4 @@
-import { requestUrl } from "obsidian";
+﻿import { requestUrl } from "obsidian";
 import type { EariSettings } from "./settings.js";
 export interface VaultMeta {
   vaultId: string;
@@ -33,6 +33,20 @@ export class ApiClient {
 
   update(s: EariSettings): void { this.s = s; }
 
+  /** request wrapper: retry 429/5xx with backoff (respects server "retry in N seconds") */
+  private async req(fn: () => Promise<any>, tries = 4): Promise<any> {
+    let last: any;
+    for (let i = 0; i < tries; i++) {
+      last = await fn();
+      if (last.status !== 429 && last.status < 500) return last;
+      let wait = 1500 * Math.pow(2, i) + Math.random() * 500;
+      const m = String(last.text ?? "").match(/retry in (\d+) seconds/i);
+      if (m) wait = Math.max(wait, Number(m[1]) * 1000 + 500);
+      await new Promise((res) => setTimeout(res, Math.min(wait, 60000)));
+    }
+    return last;
+  }
+
   private base(): string {
     return this.s.serverUrl.replace(/\/+$/, "");
   }
@@ -48,13 +62,13 @@ export class ApiClient {
 
   async testConnection(): Promise<{ ok: boolean; error?: string }> {
     try {
-      const r = await requestUrl({
+      const r = await this.req(() => requestUrl({
         url: `${this.base()}/api/v1/auth/test`,
         method: "POST",
         headers: this.headers({ "Content-Type": "application/json" }),
         body: JSON.stringify({ vaultId: this.s.vaultId, secret: this.s.vaultSecret }),
         throw: false,
-      });
+      }));
       if (r.status === 204 || r.status === 200) return { ok: true };
       return { ok: false, error: `HTTP ${r.status}: ${r.text}` };
     } catch (e: any) {
@@ -63,34 +77,34 @@ export class ApiClient {
   }
 
   async meta(): Promise<VaultMeta> {
-    const r = await requestUrl({
+    const r = await this.req(() => requestUrl({
       url: `${this.base()}/api/v1/vaults/${encodeURIComponent(this.s.vaultId)}/meta`,
       method: "GET",
       headers: this.headers(),
       throw: false,
-    });
+      }));
     if (r.status !== 200) throw new Error(`meta ${r.status}: ${r.text}`);
     return r.json;
   }
 
   async changes(since: number, limit = 500): Promise<ChangesResponse> {
-    const r = await requestUrl({
+    const r = await this.req(() => requestUrl({
       url: `${this.base()}/api/v1/vaults/${encodeURIComponent(this.s.vaultId)}/changes?since=${since}&limit=${limit}`,
       method: "GET",
       headers: this.headers(),
       throw: false,
-    });
+      }));
     if (r.status !== 200) throw new Error(`changes ${r.status}: ${r.text}`);
     return r.json;
   }
 
   async download(path: string): Promise<{ data: ArrayBuffer; hash: string; version: number; mtime: number; size: number }> {
-    const r = await requestUrl({
+    const r = await this.req(() => requestUrl({
       url: `${this.base()}/api/v1/vaults/${encodeURIComponent(this.s.vaultId)}/files/${encodePath(path)}`,
       method: "GET",
       headers: this.headers(),
       throw: false,
-    });
+      }));
     if (r.status !== 200) throw new Error(`download ${r.status}: ${r.text}`);
     return {
       data: r.arrayBuffer,
@@ -109,13 +123,13 @@ export class ApiClient {
       "X-Hash": hash,
     };
     if (seenDeleteVersion) extra["X-Seen-Delete-Version"] = String(seenDeleteVersion);
-    const r = await requestUrl({
+    const r = await this.req(() => requestUrl({
       url: `${this.base()}/api/v1/vaults/${encodeURIComponent(this.s.vaultId)}/files/${encodePath(path)}`,
       method: "PUT",
       headers: this.headers(extra),
       body: data,
       throw: false,
-    });
+      }));
     if (r.status === 409) {
       const info = r.json;
       throw new ConflictError(info);
@@ -125,23 +139,23 @@ export class ApiClient {
   }
 
   async remove(path: string, baseVersion: number): Promise<void> {
-    const r = await requestUrl({
+    const r = await this.req(() => requestUrl({
       url: `${this.base()}/api/v1/vaults/${encodeURIComponent(this.s.vaultId)}/files/${encodePath(path)}?baseVersion=${baseVersion}`,
       method: "DELETE",
       headers: this.headers(),
       throw: false,
-    });
+      }));
     if (r.status !== 200 && r.status !== 204) throw new Error(`delete ${r.status}: ${r.text}`);
   }
 
   async move(from: string, to: string, baseVersion: number): Promise<void> {
-    const r = await requestUrl({
+    const r = await this.req(() => requestUrl({
       url: `${this.base()}/api/v1/vaults/${encodeURIComponent(this.s.vaultId)}/move`,
       method: "POST",
       headers: this.headers({ "Content-Type": "application/json" }),
       body: JSON.stringify({ from, to, baseVersion }),
       throw: false,
-    });
+      }));
     if (r.status !== 200) throw new Error(`move ${r.status}: ${r.text}`);
   }
 

@@ -47,7 +47,7 @@ export async function buildServer(cfg: RuntimeConfig, db: Db) {
   }
   const app = Fastify({ logger: { level: cfg.logLevel }, bodyLimit: 1024 * 1024 * 1024, https: httpsOpts });
 
-  await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
+  await app.register(rateLimit, { max: 600, timeWindow: "1 minute" });
   await app.register(websocket);
   await app.register(multipart, { limits: { fileSize: 1024 * 1024 * 1024 } });
 

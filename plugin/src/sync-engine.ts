@@ -23,6 +23,7 @@ export class SyncEngine {
   private ws: WebSocket | null = null;
   private wsReconnectTimer: any = null;
   private wsAttempts = 0;
+  private wsPullTimer: any = null;
   private syncing = false;
   private stopped = false;
   private chain: Promise<unknown> = Promise.resolve();
@@ -70,6 +71,7 @@ export class SyncEngine {
     this.watcher.stop(this.deps.vault);
     if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
     if (this.wsReconnectTimer) { clearTimeout(this.wsReconnectTimer); this.wsReconnectTimer = null; }
+    if (this.wsPullTimer) { clearTimeout(this.wsPullTimer); this.wsPullTimer = null; }
   }
 
   async syncNow(): Promise<void> {
@@ -98,8 +100,13 @@ export class SyncEngine {
   private connectWs(): void {
     this.ws = this.api.connectWs(
       (seq) => {
-        // pull incremental
-        void this.enqueue(() => this.pullChanges().catch((e) => console.error("ws pull", e)));
+        // coalesce bursts of change notifications into one pull
+        if (this.wsPullTimer) return;
+        this.wsPullTimer = setTimeout(() => {
+          this.wsPullTimer = null;
+          if (this.stopped) return;
+          void this.enqueue(() => this.pullChanges().catch((e) => console.error("ws pull", e)));
+        }, 2000);
       },
       (s) => {
         if (s === "connected") this.deps.onStatus("connected");
