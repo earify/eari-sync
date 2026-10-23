@@ -2,7 +2,7 @@
 import { DEFAULT_SETTINGS, type EariSettings } from "./settings.js";
 import { ApiClient } from "./api.js";
 import { SyncEngine } from "./sync-engine.js";
-import { listDirRecursive } from "./indexer.js";
+import { listDirRecursive, isExcluded, BASE_EXCLUDES, type DirEntry } from "./indexer.js";
 import { STATUS_LABELS, type SyncStatus } from "./status.js";
 
 export default class EariSyncPlugin extends Plugin {
@@ -95,11 +95,31 @@ export default class EariSyncPlugin extends Plugin {
   }
 }
 
+interface ObsNode {
+  name: string;
+  relPath: string; // relative to .obsidian
+  isFolder: boolean;
+  children: ObsNode[];
+  baseExcluded: boolean;
+}
+
 class EariSettingTab extends PluginSettingTab {
   plugin: EariSyncPlugin;
+  private expanded = new Set<string>();
+
   constructor(app: any, plugin: EariSyncPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+  }
+
+  private isIncluded(rel: string): boolean {
+    const inc = this.plugin.settings.obsidianInclude ?? [];
+    return inc.some((e) => (e.endsWith("/") ? rel.startsWith(e) : rel === e || rel.startsWith(e + "/")));
+  }
+
+  private isAlwaysExcluded(rel: string): boolean {
+    const p = ".obsidian/" + rel;
+    return isExcluded(p, BASE_EXCLUDES) || isExcluded(p + "/", BASE_EXCLUDES) || rel.startsWith("workspace");
   }
 
   async display(): Promise<void> {
@@ -129,7 +149,7 @@ class EariSettingTab extends PluginSettingTab {
       .setValue(this.plugin.settings.syncMode)
       .onChange(async (v: any) => { this.plugin.settings.syncMode = v; await this.plugin.saveSettings(); }));
 
-    // ---- .obsidian selection UI ----
+    // ---- .obsidian tree UI ----
     new Setting(containerEl)
       .setName("설정 폴더 동기화 (.obsidian)")
       .setDesc("끄면 .obsidian 전체가 동기화되지 않습니다")
@@ -137,36 +157,114 @@ class EariSettingTab extends PluginSettingTab {
         .onChange(async (v) => { this.plugin.settings.syncObsidian = v; await this.plugin.saveSettings(); this.display(); }));
 
     if (this.plugin.settings.syncObsidian) {
-      containerEl.createEl("h3", { text: ".obsidian 동기화 항목 선택" });
+      containerEl.createEl("h3", { text: ".obsidian 동기화 항목" });
       const note = containerEl.createEl("p");
-      note.setText("workspace* 파일은 기기별 고유 설정이라 항상 제외됩니다. 폴더는 통째로 포함/제외됩니다.");
+      note.setText("폴더 ▼ 버튼으로 펼쳐서 항목별 선택. workspace*와 eari-sync 자기 폴더는 항상 제외됩니다.");
       note.style.fontSize = "0.85em";
       note.style.opacity = "0.7";
 
-      let entries: Array<{ name: string; isFolder: boolean }> = [];
+      let entries: DirEntry[] = [];
       try {
-        const all = await listDirRecursive(this.app.vault, ".obsidian");
-        entries = all.sort((a, b) => a.path.localeCompare(b.path)).map((e) => ({ name: e.path, isFolder: e.isFolder }));
+        entries = await listDirRecursive(this.app.vault, ".obsidian");
       } catch {
         entries = [];
       }
 
-      if (entries.length === 0) {
-        containerEl.createEl("p", { text: ".obsidian 폴더를 찾을 수 없습니다." });
+      // build tree
+      const root: ObsNode = { name: "", relPath: "", isFolder: true, children: [], baseExcluded: false };
+      const dirNodes = new Map<string, ObsNode>([["", root]]);
+      for (const e of entries) {
+        if (!e.path.startsWith(".obsidian/")) continue;
+        const rel = e.path.slice(".obsidian/".length);
+        if (!rel) continue;
+        const parts = rel.split("/");
+        let parentPath = "";
+        for (let i = 0; i < parts.length - 1; i++) {
+          const pp = parts.slice(0, i + 1).join("/");
+          if (!dirNodes.has(pp)) {
+            const node: ObsNode = { name: parts[i], relPath: pp, isFolder: true, children: [], baseExcluded: this.isAlwaysExcluded(pp) };
+            dirNodes.set(pp, node);
+            (dirNodes.get(parentPath) as ObsNode).children.push(node);
+          }
+          parentPath = pp;
+        }
+        const isFolder = e.isFolder;
+        const node: ObsNode = {
+          name: parts[parts.length - 1],
+          relPath: rel,
+          isFolder,
+          children: [],
+          baseExcluded: this.isAlwaysExcluded(rel),
+        };
+        dirNodes.set(rel, node);
+        (dirNodes.get(parentPath) as ObsNode).children.push(node);
       }
-      for (const ent of entries) {
-        const key = ent.isFolder ? ent.name + "/" : ent.name;
-        new Setting(containerEl)
-          .setName(ent.name)
-          .setDesc(ent.isFolder ? "폴더" : "파일")
-          .addToggle((t) => t
-            .setValue((this.plugin.settings.obsidianInclude ?? []).includes(key))
-            .onChange(async (v) => {
-              const inc = new Set(this.plugin.settings.obsidianInclude ?? []);
-              if (v) inc.add(key); else inc.delete(key);
-              this.plugin.settings.obsidianInclude = Array.from(inc).sort();
-              await this.plugin.saveSettings();
-            }));
+
+      const renderLevel = (nodes: ObsNode[], depth: number, container: HTMLElement): void => {
+        const sorted = [...nodes].sort((a, b) => (a.isFolder === b.isFolder ? a.name.localeCompare(b.name) : a.isFolder ? -1 : 1));
+        for (const node of sorted) {
+          if (node.relPath.startsWith("workspace")) continue;
+          const wrap = container.createDiv();
+          wrap.style.marginLeft = depth > 0 ? `${depth * 18}px` : "0";
+          const setting = new Setting(wrap).setName(node.name);
+
+          if (node.isFolder) {
+            const parentIncluded = this.isIncluded(node.relPath + "/");
+            if (node.baseExcluded) {
+              setting.setDesc("항상 제외");
+              setting.addToggle((t) => t.setValue(false).setDisabled(true));
+            } else {
+              const isOpen = this.expanded.has(node.relPath);
+              setting.addButton((b) => {
+                b.setButtonText(isOpen ? "▼" : "▶").setTooltip("펼치기/접기");
+                b.onClick(() => { if (isOpen) this.expanded.delete(node.relPath); else this.expanded.add(node.relPath); this.display(); });
+              });
+              setting.setDesc(parentIncluded ? "폴더 전체 포함됨" : "폴더");
+              setting.addToggle((t) => t
+                .setValue(parentIncluded)
+                .onChange(async (v) => {
+                  const inc = new Set(this.plugin.settings.obsidianInclude ?? []);
+                  if (v) inc.add(node.relPath + "/"); else inc.delete(node.relPath + "/");
+                  this.plugin.settings.obsidianInclude = Array.from(inc).sort();
+                  await this.plugin.saveSettings();
+                  this.display();
+                }));
+            }
+            if (isOpen && !node.baseExcluded) {
+              if (parentIncluded) {
+                const hint = wrap.createDiv();
+                hint.setText("전체 포함 중 — 개별 선택하려면 토글을 끄세요");
+                hint.style.fontSize = "0.8em";
+                hint.style.opacity = "0.6";
+                hint.style.marginLeft = "18px";
+              } else {
+                renderLevel(node.children, depth + 1, wrap);
+              }
+            }
+          } else {
+            if (node.baseExcluded) {
+              setting.setDesc("항상 제외");
+              setting.addToggle((t) => t.setValue(false).setDisabled(true));
+            } else {
+              setting.addToggle((t) => t
+                .setValue(this.isIncluded(node.relPath))
+                .onChange(async (v) => {
+                  const inc = new Set(this.plugin.settings.obsidianInclude ?? []);
+                  const parts = node.relPath.split("/");
+                  for (let i = 1; i < parts.length; i++) inc.delete(parts.slice(0, i).join("/") + "/");
+                  const key = node.relPath;
+                  if (v) inc.add(key); else inc.delete(key);
+                  this.plugin.settings.obsidianInclude = Array.from(inc).sort();
+                  await this.plugin.saveSettings();
+                }));
+            }
+          }
+        }
+      };
+
+      renderLevel(root.children, 0, containerEl);
+      if (root.children.length === 0) {
+        containerEl.createEl("p", { text: ".obsidian 폴더를 찾을 수 없습니다." });
       }
     }
 
