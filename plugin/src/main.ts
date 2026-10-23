@@ -22,10 +22,10 @@ export default class EariSyncPlugin extends Plugin {
     this.statusEl.setText(STATUS_LABELS.idle);
     this.statusEl.addClass("eari-sync-status");
 
-    this.addCommand({ id: "sync-now", name: "eari-sync: Sync now", callback: () => this.syncNow() });
-    this.addCommand({ id: "test-connection", name: "eari-sync: Test connection", callback: () => this.testConnection() });
-    this.addCommand({ id: "show-status", name: "eari-sync: Show sync status", callback: () => new Notice(this.statusText()) });
-    this.addCommand({ id: "retry-failed", name: "eari-sync: Retry failed items", callback: () => this.syncNow() });
+    this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.syncNow() });
+    this.addCommand({ id: "test-connection", name: "Test connection", callback: () => this.testConnection() });
+    this.addCommand({ id: "show-status", name: "Show sync status", callback: () => new Notice(this.statusText()) });
+    this.addCommand({ id: "retry-failed", name: "Retry failed items", callback: () => this.syncNow() });
 
     this.addSettingTab(new EariSettingTab(this.app, this));
 
