@@ -157,6 +157,12 @@ export class SyncEngine {
     const vault = this.deps.vault;
     const path = c.path;
     if (!isPathSynced(path, this.settings)) return;
+    // skip if we already have this exact content (cheap retry after partial failure)
+    const have = this.settings.fileIndex[path];
+    if (c.op !== "delete" && have && c.hash && have.hash === c.hash) {
+      this.settings.lastSeq = Math.max(this.settings.lastSeq, c.seq);
+      return;
+    }
     if (c.op === "delete") {
       if (path.startsWith(".obsidian/")) {
         // hidden folder: remove via adapter (no trash for dotfiles)
@@ -209,6 +215,7 @@ export class SyncEngine {
       delete this.settings.deletedSeen[path];
     } catch (e) {
       console.error("apply change failed", path, e);
+      throw e;
     }
   }
 
