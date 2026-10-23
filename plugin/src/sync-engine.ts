@@ -2,7 +2,7 @@
 import { ApiClient, ConflictError, type RemoteChange } from "./api.js";
 import type { EariSettings } from "./settings.js";
 import { Watcher } from "./watcher.js";
-import { isPathSynced, listFiles } from "./indexer.js";
+import { isPathSynced, listFiles, listDirRecursive } from "./indexer.js";
 import { computeMeta } from "./indexer.js";
 import { conflictName } from "./conflict.js";
 import { sha256ArrayBuffer } from "./hash.js";
@@ -137,21 +137,13 @@ export class SyncEngine {
 
 
 
-  /** enumerate .obsidian contents via adapter (hidden folder is not in the vault index) */
+  /** enumerate .obsidian contents (hidden folder is not in the vault index) */
   private async listObsidianFiles(): Promise<string[]> {
     if (!this.settings.syncObsidian) return [];
-    const adapter = this.deps.vault.adapter;
-    const out: string[] = [];
-    const walk = async (dir: string): Promise<void> => {
-      let res: any;
-      try { res = await adapter.list(dir); } catch { return; }
-      for (const f of Object.keys(res.files)) {
-        if (isPathSynced(f, this.settings)) out.push(f);
-      }
-      for (const d of res.folders) await walk(d);
-    };
-    await walk(".obsidian");
-    return out;
+    const entries = await listDirRecursive(this.deps.vault, ".obsidian");
+    return entries
+      .filter((e) => !e.isFolder && isPathSynced(e.path, this.settings))
+      .map((e) => e.path);
   }
 
   private async applyChange(c: RemoteChange): Promise<void> {

@@ -144,20 +144,8 @@ class EariSettingTab extends PluginSettingTab {
 
       let entries: Array<{ name: string; isFolder: boolean }> = [];
       try {
-        const res = await this.app.vault.adapter.list(".obsidian");
-        const map = new Map<string, boolean>();
-        for (const f of Object.keys(res.files)) {
-          const rel = f.slice(".obsidian/".length);
-          const top = rel.split("/")[0];
-          if (top) map.set(top, rel.includes("/"));
-        }
-        for (const d of res.folders) {
-          const rel = d.slice(".obsidian/".length).replace(/\/$/, "");
-          if (rel && !rel.includes("/")) map.set(rel, true);
-        }
-        entries = Array.from(map.entries())
-          .map(([name, isFolder]) => ({ name, isFolder }))
-          .sort((a, b) => a.name.localeCompare(b.name));
+        const all = await listDirRecursive(this.app.vault, ".obsidian");
+        entries = all.sort((a, b) => a.path.localeCompare(b.path)).map((e) => ({ name: e.path, isFolder: e.isFolder }));
       } catch {
         entries = [];
       }
