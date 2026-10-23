@@ -137,11 +137,35 @@ export class SyncEngine {
 
 
 
+  /** enumerate .obsidian contents via adapter (hidden folder is not in the vault index) */
+  private async listObsidianFiles(): Promise<string[]> {
+    if (!this.settings.syncObsidian) return [];
+    const adapter = this.deps.vault.adapter;
+    const out: string[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      let res: any;
+      try { res = await adapter.list(dir); } catch { return; }
+      for (const f of Object.keys(res.files)) {
+        if (isPathSynced(f, this.settings)) out.push(f);
+      }
+      for (const d of res.folders) await walk(d);
+    };
+    await walk(".obsidian");
+    return out;
+  }
+
   private async applyChange(c: RemoteChange): Promise<void> {
     const vault = this.deps.vault;
     const path = c.path;
-    if (isPathSynced(path, this.settings)) return;
+    if (!isPathSynced(path, this.settings)) return;
     if (c.op === "delete") {
+      if (path.startsWith(".obsidian/")) {
+        // hidden folder: remove via adapter (no trash for dotfiles)
+        try { await vault.adapter.remove(path); } catch {}
+        delete this.settings.fileIndex[path];
+        if (typeof c.version === "number") this.settings.deletedSeen[path] = c.version;
+        return;
+      }
       const f = vault.getAbstractFileByPath(path);
       if (f) {
         // move into in-vault .trash (which itself is synced) so deletions stay visible/recoverable
@@ -169,13 +193,18 @@ export class SyncEngine {
     try {
       const { data, hash, version, mtime } = await this.api.download(path);
       this.watcher.markWritten(path);
-      const existing = vault.getAbstractFileByPath(path);
-      if (existing) {
-        await vault.modifyBinary(existing as TFile, data);
+      if (path.startsWith(".obsidian/")) {
+        await ensureAdapterParents(vault, path);
+        await vault.adapter.writeBinary(path, data);
       } else {
-        // ensure parent folders
-        await ensureParents(vault, path);
-        await vault.createBinary(path, data);
+        const existing = vault.getAbstractFileByPath(path);
+        if (existing) {
+          await vault.modifyBinary(existing as TFile, data);
+        } else {
+          // ensure parent folders
+          await ensureParents(vault, path);
+          await vault.createBinary(path, data);
+        }
       }
       this.settings.fileIndex[path] = { version, hash };
       delete this.settings.deletedSeen[path];
@@ -186,9 +215,10 @@ export class SyncEngine {
 
   private async pushAll(): Promise<void> {
     const vault = this.deps.vault;
-    const files = listFiles(vault, this.settings);
-    const localPaths = new Set(files.map((f) => f.path));
-    // push new/changed
+    const files = listFiles(vault, this.settings).filter((f) => !f.path.startsWith(".obsidian/"));
+    const obsFiles = await this.listObsidianFiles();
+    const localPaths = new Set<string>([...files.map((f) => f.path), ...obsFiles]);
+    // push new/changed (indexed files)
     for (const f of files) {
       if (this.watcher.isRecentlyWritten(f.path)) continue;
       try {
@@ -207,10 +237,24 @@ export class SyncEngine {
         }
       }
     }
+    // push new/changed (.obsidian — hidden folder, via adapter)
+    for (const p of obsFiles) {
+      try {
+        const idx = this.settings.fileIndex[p];
+        const data = await vault.adapter.readBinary(p);
+        const hash = await sha256ArrayBuffer(data);
+        if (idx && idx.hash === hash) continue;
+        const st: any = ((await vault.adapter.list(p)) as any).files?.[p];
+        await this.uploadOne(p, data, idx?.version ?? 0, st?.mtime ?? Date.now(), hash);
+      } catch (e) {
+        if (e instanceof ConflictError) await this.handleConflict(p, (e as ConflictError).info);
+        else console.error("push failed", p, e);
+      }
+    }
     // push deletes: paths in index but not local
     for (const p of Object.keys(this.settings.fileIndex)) {
       if (localPaths.has(p)) continue;
-      if (isPathSynced(p, this.settings)) continue;
+      if (!isPathSynced(p, this.settings)) continue;
       try {
         const idx = this.settings.fileIndex[p];
         await this.api.remove(p, idx.version);
@@ -224,7 +268,7 @@ export class SyncEngine {
   private async pushPaths(paths: string[]): Promise<void> {
     if (!this.settings.autoSync) return;
     for (const p of paths) {
-      if (isPathSynced(p, this.settings)) continue;
+      if (!isPathSynced(p, this.settings)) continue;
       const f = this.deps.vault.getAbstractFileByPath(p);
       if (!f) continue;
       try {
@@ -357,5 +401,15 @@ async function ensureParents(vault: Vault, path: string): Promise<void> {
     if (!vault.getAbstractFileByPath(cur)) {
       try { await vault.createFolder(cur); } catch {}
     }
+  }
+}
+
+async function ensureAdapterParents(vault: Vault, path: string): Promise<void> {
+  const parts = path.split("/");
+  parts.pop();
+  let cur = "";
+  for (const part of parts) {
+    cur = cur ? `${cur}/${part}` : part;
+    try { if (!(await vault.adapter.exists(cur))) await vault.adapter.mkdir(cur); } catch {}
   }
 }

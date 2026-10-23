@@ -1,4 +1,4 @@
-import { Plugin, PluginSettingTab, Setting, Notice, TFile } from "obsidian";
+﻿import { Plugin, PluginSettingTab, Setting, Notice, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, type EariSettings } from "./settings.js";
 import { ApiClient } from "./api.js";
 import { SyncEngine } from "./sync-engine.js";
@@ -56,6 +56,7 @@ export default class EariSyncPlugin extends Plugin {
     const data = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data ?? {});
     if (!this.settings.fileIndex) this.settings.fileIndex = {};
+    if (!this.settings.deletedSeen) this.settings.deletedSeen = {};
   }
 
   async saveSettings(): Promise<void> {
@@ -100,7 +101,7 @@ class EariSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
-  display(): void {
+  async display(): Promise<void> {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "eari-sync" });
@@ -140,30 +141,49 @@ class EariSettingTab extends PluginSettingTab {
       note.setText("workspace* 파일은 기기별 고유 설정이라 항상 제외됩니다. 폴더는 통째로 포함/제외됩니다.");
       note.style.fontSize = "0.85em";
       note.style.opacity = "0.7";
-      const folder = this.app.vault.getAbstractFileByPath(".obsidian") as any;
-      if (folder && Array.isArray(folder.children)) {
-        for (const child of folder.children) {
-          const isFolder = Array.isArray(child.children);
-          const key = isFolder ? `${child.name}/` : child.name;
-          new Setting(containerEl)
-            .setName(child.name)
-            .setDesc(isFolder ? "폴더" : "파일")
-            .addToggle((t) => t
-              .setValue((this.plugin.settings.obsidianInclude ?? []).includes(key))
-              .onChange(async (v) => {
-                const inc = new Set(this.plugin.settings.obsidianInclude ?? []);
-                if (v) inc.add(key); else inc.delete(key);
-                this.plugin.settings.obsidianInclude = Array.from(inc).sort();
-                await this.plugin.saveSettings();
-              }));
+
+      let entries: Array<{ name: string; isFolder: boolean }> = [];
+      try {
+        const res = await this.app.vault.adapter.list(".obsidian");
+        const map = new Map<string, boolean>();
+        for (const f of Object.keys(res.files)) {
+          const rel = f.slice(".obsidian/".length);
+          const top = rel.split("/")[0];
+          if (top) map.set(top, rel.includes("/"));
         }
-      } else {
+        for (const d of res.folders) {
+          const rel = d.slice(".obsidian/".length).replace(/\/$/, "");
+          if (rel && !rel.includes("/")) map.set(rel, true);
+        }
+        entries = Array.from(map.entries())
+          .map(([name, isFolder]) => ({ name, isFolder }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+      } catch {
+        entries = [];
+      }
+
+      if (entries.length === 0) {
         containerEl.createEl("p", { text: ".obsidian 폴더를 찾을 수 없습니다." });
+      }
+      for (const ent of entries) {
+        const key = ent.isFolder ? ent.name + "/" : ent.name;
+        new Setting(containerEl)
+          .setName(ent.name)
+          .setDesc(ent.isFolder ? "폴더" : "파일")
+          .addToggle((t) => t
+            .setValue((this.plugin.settings.obsidianInclude ?? []).includes(key))
+            .onChange(async (v) => {
+              const inc = new Set(this.plugin.settings.obsidianInclude ?? []);
+              if (v) inc.add(key); else inc.delete(key);
+              this.plugin.settings.obsidianInclude = Array.from(inc).sort();
+              await this.plugin.saveSettings();
+            }));
       }
     }
 
     // ---- advanced excludes ----
-    new Setting(containerEl).setName("고급: 추가 제외 패턴 (glob, 한 줄에 하나)")
+    new Setting(containerEl)
+      .setName("고급: 추가 제외 패턴 (glob, 한 줄에 하나)")
       .setDesc("보통은 비워둬도 됩니다. 항상 제외: .git, .DS_Store, Thumbs.db, .eari-sync")
       .addTextArea((t) => t.setValue((this.plugin.settings.excludePatterns ?? []).join("\n"))
         .onChange(async (v) => { this.plugin.settings.excludePatterns = v.split("\n").map((x) => x.trim()).filter(Boolean); await this.plugin.saveSettings(); }));
