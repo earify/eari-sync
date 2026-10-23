@@ -5,6 +5,7 @@ import type { EariSettings } from "./settings.js";
 export const BASE_EXCLUDES = [
   ".git/**",
   ".eari-sync/**",
+  ".obsidian/plugins/eari-sync/**",
   "**/.DS_Store",
   "**/Thumbs.db",
 ];

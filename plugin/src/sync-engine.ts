@@ -236,8 +236,7 @@ export class SyncEngine {
         const data = await vault.adapter.readBinary(p);
         const hash = await sha256ArrayBuffer(data);
         if (idx && idx.hash === hash) continue;
-        const st: any = ((await vault.adapter.list(p)) as any).files?.[p];
-        await this.uploadOne(p, data, idx?.version ?? 0, st?.mtime ?? Date.now(), hash);
+        await this.uploadOne(p, data, idx?.version ?? 0, Date.now(), hash);
       } catch (e) {
         if (e instanceof ConflictError) await this.handleConflict(p, (e as ConflictError).info);
         else console.error("push failed", p, e);
