@@ -83,9 +83,17 @@ export default class EariSyncPlugin extends Plugin {
   }
 
   async syncNow(): Promise<void> {
-    if (!this.isConfigured()) { new Notice("eari-sync: not configured"); return; }
+    if (!this.isConfigured()) { new Notice("eari-sync: 설정을 먼저 입력하세요 (Server URL / Vault ID / Secret)"); return; }
     if (!this.engine) await this.startEngine();
-    await this.engine?.syncNow();
+    if (!this.engine) { new Notice("eari-sync: 엔진 시작 실패"); return; }
+    const notice = new Notice("eari-sync: 동기화 시작…", 0);
+    try {
+      await this.engine.syncNow((msg) => notice.setMessage("eari-sync: " + msg));
+      setTimeout(() => notice.hide(), 2500);
+    } catch (e: any) {
+      notice.setMessage("eari-sync: 동기화 실패 — " + (e?.message ?? String(e)));
+      setTimeout(() => notice.hide(), 5000);
+    }
   }
 
   async testConnection(): Promise<void> {

@@ -27,6 +27,7 @@ export class SyncEngine {
   private syncing = false;
   private stopped = false;
   private chain: Promise<unknown> = Promise.resolve();
+  private stats = { up: 0, down: 0, conflicts: 0 };
   private settings: EariSettings;
   private deps: SyncEngineDeps;
 
@@ -74,22 +75,29 @@ export class SyncEngine {
     if (this.wsPullTimer) { clearTimeout(this.wsPullTimer); this.wsPullTimer = null; }
   }
 
-  async syncNow(): Promise<void> {
+  async syncNow(onProgress?: (msg: string) => void): Promise<void> {
     return this.enqueue(async () => {
       if (this.syncing) return;
       this.syncing = true;
+      this.stats = { up: 0, down: 0, conflicts: 0 };
       this.deps.onStatus("syncing");
+      onProgress?.("동기화 중… (변경사항 확인)");
       try {
         await this.pullChanges();
+        onProgress?.(this.stats.down > 0 ? `변경사항 적용 (↓${this.stats.down})` : "변경사항 없음, 업로드 확인 중…");
         await this.pushAll();
         await this.deps.saveSettings();
-        this.deps.onStatus("done");
+        const summary = `완료 — ↓${this.stats.down} · ↑${this.stats.up}` + (this.stats.conflicts ? ` · 충돌 ${this.stats.conflicts}` : "");
+        onProgress?.(summary);
+        this.deps.onStatus("done", `â†“${this.stats.down} â†‘${this.stats.up}`);
       } catch (e: any) {
         console.error("sync error", e);
-        if (String(e?.message).includes("401") || String(e).includes("unauthorized")) {
-          this.deps.onStatus("auth", e?.message);
+        const msg = e?.message ?? String(e);
+        onProgress?.(`오류 — ${msg}`);
+        if (String(msg).includes("401") || String(msg).includes("unauthorized")) {
+          this.deps.onStatus("auth", msg);
         } else {
-          this.deps.onStatus("error", e?.message);
+          this.deps.onStatus("error", msg);
         }
       } finally {
         this.syncing = false;
@@ -169,6 +177,7 @@ export class SyncEngine {
         try { await vault.adapter.remove(path); } catch {}
         delete this.settings.fileIndex[path];
         if (typeof c.version === "number") this.settings.deletedSeen[path] = c.version;
+      this.stats.down++;
         return;
       }
       const f = vault.getAbstractFileByPath(path);
@@ -181,6 +190,7 @@ export class SyncEngine {
       if (typeof c.version === "number") {
         this.settings.deletedSeen[path] = c.version;
       }
+      this.stats.down++;
       return;
     }
     if (c.op === "move" && c.fromPath) {
@@ -212,6 +222,7 @@ export class SyncEngine {
         }
       }
       this.settings.fileIndex[path] = { version, hash };
+      this.stats.down++;
       delete this.settings.deletedSeen[path];
     } catch (e) {
       console.error("apply change failed", path, e);
@@ -263,6 +274,7 @@ export class SyncEngine {
       try {
         const idx = this.settings.fileIndex[p];
         await this.api.remove(p, idx.version);
+        this.stats.up++;
         delete this.settings.fileIndex[p];
       } catch (e) {
         console.error("delete push failed", p, e);
@@ -323,12 +335,14 @@ export class SyncEngine {
     const seenDelete = this.settings.deletedSeen[path];
     const res = await this.api.upload(path, data, baseVersion, mtime, hash, seenDelete);
     if (seenDelete) delete this.settings.deletedSeen[path];
+    this.stats.up++;
     this.settings.fileIndex[path] = { version: res.version, hash };
     this.watcher.markWritten(path);
   }
 
   private async handleConflict(path: string, info: any): Promise<void> {
     this.deps.onStatus("conflict");
+    this.stats.conflicts++;
     // Case: server has deleted this file but we pushed a stale copy
     if (info?.deleted) {
       try {
