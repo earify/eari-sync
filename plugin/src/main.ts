@@ -2,6 +2,7 @@
 import { DEFAULT_SETTINGS, type EariSettings } from "./settings.js";
 import { ApiClient } from "./api.js";
 import { SyncEngine } from "./sync-engine.js";
+import { listDirRecursive } from "./indexer.js";
 import { STATUS_LABELS, type SyncStatus } from "./status.js";
 
 export default class EariSyncPlugin extends Plugin {
