@@ -127,8 +127,46 @@ class EariSettingTab extends PluginSettingTab {
       .setValue(this.plugin.settings.syncMode)
       .onChange(async (v: any) => { this.plugin.settings.syncMode = v; await this.plugin.saveSettings(); }));
 
-    new Setting(containerEl).setName("Exclude patterns (one per line)").addTextArea((t) => t.setValue(this.plugin.settings.excludePatterns.join("\n"))
-      .onChange(async (v) => { this.plugin.settings.excludePatterns = v.split("\n").map((x) => x.trim()).filter(Boolean); await this.plugin.saveSettings(); }));
+    // ---- .obsidian selection UI ----
+    new Setting(containerEl)
+      .setName("설정 폴더 동기화 (.obsidian)")
+      .setDesc("끄면 .obsidian 전체가 동기화되지 않습니다")
+      .addToggle((t) => t.setValue(this.plugin.settings.syncObsidian)
+        .onChange(async (v) => { this.plugin.settings.syncObsidian = v; await this.plugin.saveSettings(); this.display(); }));
+
+    if (this.plugin.settings.syncObsidian) {
+      containerEl.createEl("h3", { text: ".obsidian 동기화 항목 선택" });
+      const note = containerEl.createEl("p");
+      note.setText("workspace* 파일은 기기별 고유 설정이라 항상 제외됩니다. 폴더는 통째로 포함/제외됩니다.");
+      note.style.fontSize = "0.85em";
+      note.style.opacity = "0.7";
+      const folder = this.app.vault.getAbstractFileByPath(".obsidian") as any;
+      if (folder && Array.isArray(folder.children)) {
+        for (const child of folder.children) {
+          const isFolder = Array.isArray(child.children);
+          const key = isFolder ? `${child.name}/` : child.name;
+          new Setting(containerEl)
+            .setName(child.name)
+            .setDesc(isFolder ? "폴더" : "파일")
+            .addToggle((t) => t
+              .setValue((this.plugin.settings.obsidianInclude ?? []).includes(key))
+              .onChange(async (v) => {
+                const inc = new Set(this.plugin.settings.obsidianInclude ?? []);
+                if (v) inc.add(key); else inc.delete(key);
+                this.plugin.settings.obsidianInclude = Array.from(inc).sort();
+                await this.plugin.saveSettings();
+              }));
+        }
+      } else {
+        containerEl.createEl("p", { text: ".obsidian 폴더를 찾을 수 없습니다." });
+      }
+    }
+
+    // ---- advanced excludes ----
+    new Setting(containerEl).setName("고급: 추가 제외 패턴 (glob, 한 줄에 하나)")
+      .setDesc("보통은 비워둬도 됩니다. 항상 제외: .git, .DS_Store, Thumbs.db, .eari-sync")
+      .addTextArea((t) => t.setValue((this.plugin.settings.excludePatterns ?? []).join("\n"))
+        .onChange(async (v) => { this.plugin.settings.excludePatterns = v.split("\n").map((x) => x.trim()).filter(Boolean); await this.plugin.saveSettings(); }));
 
     new Setting(containerEl).setName("Sync now").addButton((b) => b.setButtonText("Sync").onClick(() => this.plugin.syncNow()));
 

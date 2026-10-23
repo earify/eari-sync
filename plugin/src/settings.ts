@@ -5,6 +5,8 @@ export interface EariSettings {
   autoSync: boolean;
   syncMode: "fast" | "balanced" | "saver";
   excludePatterns: string[];
+  syncObsidian: boolean;
+  obsidianInclude: string[];
   conflictKeepBoth: boolean;
   trashRetentionDays: number;
   deviceId: string;
@@ -20,7 +22,9 @@ export const DEFAULT_SETTINGS: EariSettings = {
   vaultSecret: "",
   autoSync: true,
   syncMode: "balanced",
-  excludePatterns: [".git/**", ".obsidian/cache/**", ".obsidian/workspace*.json", "**/.DS_Store"],
+  excludePatterns: [],
+  syncObsidian: false,
+  obsidianInclude: [],
   conflictKeepBoth: true,
   trashRetentionDays: 30,
   deviceId: "",

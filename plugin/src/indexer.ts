@@ -1,4 +1,13 @@
 import type { Vault, TFile } from "obsidian";
+import type { EariSettings } from "./settings.js";
+
+/** always excluded, not user-editable */
+export const BASE_EXCLUDES = [
+  ".git/**",
+  ".eari-sync/**",
+  "**/.DS_Store",
+  "**/Thumbs.db",
+];
 
 export interface LocalMeta {
   path: string;
@@ -8,11 +17,28 @@ export interface LocalMeta {
 }
 
 export function isExcluded(path: string, patterns: string[]): boolean {
-  // simple glob-ish matching: support * and **
   for (const pat of patterns) {
     if (matchGlob(path, pat)) return true;
   }
   return false;
+}
+
+/** decide whether a vault-relative path should be synced */
+export function isPathSynced(path: string, s: EariSettings): boolean {
+  const p = path.replace(/\\/g, "/");
+  if (isExcluded(p, BASE_EXCLUDES)) return false;
+  if (p === ".obsidian" || p.startsWith(".obsidian/")) {
+    if (!s.syncObsidian) return false;
+    const rel = p.slice(".obsidian/".length);
+    if (rel.startsWith("workspace")) return false; // device-specific, always excluded
+    const inc = s.obsidianInclude ?? [];
+    return inc.some((entry) => {
+      if (entry.endsWith("/")) return rel.startsWith(entry);
+      return rel === entry || rel.startsWith(entry + "/");
+    });
+  }
+  if (isExcluded(p, s.excludePatterns ?? [])) return false;
+  return true;
 }
 
 function matchGlob(path: string, pattern: string): boolean {
@@ -36,9 +62,9 @@ function matchGlob(path: string, pattern: string): boolean {
   return false;
 }
 
-export function listFiles(vault: Vault, exclude: string[]): TFile[] {
+export function listFiles(vault: Vault, s: EariSettings): TFile[] {
   const files = vault.getFiles();
-  return files.filter((f) => !isExcluded(f.path, exclude));
+  return files.filter((f) => isPathSynced(f.path, s));
 }
 
 export async function computeMeta(vault: Vault, file: TFile): Promise<LocalMeta> {

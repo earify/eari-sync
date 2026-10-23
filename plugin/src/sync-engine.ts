@@ -1,8 +1,8 @@
-import type { Plugin, Vault, TFile } from "obsidian";
+﻿import type { Plugin, Vault, TFile } from "obsidian";
 import { ApiClient, ConflictError, type RemoteChange } from "./api.js";
 import type { EariSettings } from "./settings.js";
 import { Watcher } from "./watcher.js";
-import { isExcluded, listFiles } from "./indexer.js";
+import { isPathSynced, listFiles } from "./indexer.js";
 import { computeMeta } from "./indexer.js";
 import { conflictName } from "./conflict.js";
 import { sha256ArrayBuffer } from "./hash.js";
@@ -140,7 +140,7 @@ export class SyncEngine {
   private async applyChange(c: RemoteChange): Promise<void> {
     const vault = this.deps.vault;
     const path = c.path;
-    if (isExcluded(path, this.settings.excludePatterns)) return;
+    if (isPathSynced(path, this.settings)) return;
     if (c.op === "delete") {
       const f = vault.getAbstractFileByPath(path);
       if (f) {
@@ -186,7 +186,7 @@ export class SyncEngine {
 
   private async pushAll(): Promise<void> {
     const vault = this.deps.vault;
-    const files = listFiles(vault, this.settings.excludePatterns);
+    const files = listFiles(vault, this.settings);
     const localPaths = new Set(files.map((f) => f.path));
     // push new/changed
     for (const f of files) {
@@ -210,7 +210,7 @@ export class SyncEngine {
     // push deletes: paths in index but not local
     for (const p of Object.keys(this.settings.fileIndex)) {
       if (localPaths.has(p)) continue;
-      if (isExcluded(p, this.settings.excludePatterns)) continue;
+      if (isPathSynced(p, this.settings)) continue;
       try {
         const idx = this.settings.fileIndex[p];
         await this.api.remove(p, idx.version);
@@ -224,7 +224,7 @@ export class SyncEngine {
   private async pushPaths(paths: string[]): Promise<void> {
     if (!this.settings.autoSync) return;
     for (const p of paths) {
-      if (isExcluded(p, this.settings.excludePatterns)) continue;
+      if (isPathSynced(p, this.settings)) continue;
       const f = this.deps.vault.getAbstractFileByPath(p);
       if (!f) continue;
       try {
