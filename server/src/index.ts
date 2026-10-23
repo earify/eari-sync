@@ -128,6 +128,21 @@ export async function buildServer(cfg: RuntimeConfig, db: Db) {
     const vdir = vaultFilesDir(cfg.dataDir, vaultId);
     const existing = getFileRow(db, vaultId, path);
 
+    // deleted-on-server guard: a stale client re-uploading must NOT resurrect.
+    // A client that HAS seen the delete may intentionally recreate the file.
+    if (existing && existing.deleted === 1) {
+      const seenDelete = Number(req.headers["x-seen-delete-version"] ?? 0);
+      if (!(seenDelete && seenDelete >= existing.version)) {
+        return reply.code(409).send({
+          error: "conflict",
+          deleted: true,
+          path,
+          serverVersion: existing.version,
+          clientVersion: baseVersion,
+        });
+      }
+    }
+
     // conflict check
     if (existing && existing.deleted === 0 && baseVersion && existing.version !== baseVersion) {
       // if content identical -> idempotent

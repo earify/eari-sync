@@ -115,3 +115,35 @@ describe("path safety", () => {
     expect([400, 404]).toContain(res.statusCode);
   });
 });
+
+describe("deletion propagation", () => {
+  it("refuses stale re-upload of deleted file (no resurrection)", async () => {
+    const up = await app.inject({
+      method: "PUT",
+      url: `/api/v1/vaults/${VAULT}/files/d/del.md`,
+      headers: { ...hdr({ "x-base-version": "0", "x-mtime": String(Date.now()), "content-type": "application/octet-stream" }) },
+      payload: Buffer.from("original"),
+    });
+    expect(up.statusCode).toBe(200);
+    const del = await app.inject({ method: "DELETE", url: `/api/v1/vaults/${VAULT}/files/d/del.md`, headers: hdr() });
+    expect(del.statusCode).toBe(200);
+    // stale client pushes old content without having seen the delete
+    const stale = await app.inject({
+      method: "PUT",
+      url: `/api/v1/vaults/${VAULT}/files/d/del.md`,
+      headers: { ...hdr({ "x-base-version": "1", "x-mtime": String(Date.now()), "content-type": "application/octet-stream" }) },
+      payload: Buffer.from("original"),
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().deleted).toBe(true);
+    // client that saw the delete may intentionally recreate
+    const recreate = await app.inject({
+      method: "PUT",
+      url: `/api/v1/vaults/${VAULT}/files/d/del.md`,
+      headers: { ...hdr({ "x-base-version": "0", "x-seen-delete-version": "2", "x-mtime": String(Date.now()), "content-type": "application/octet-stream" }) },
+      payload: Buffer.from("recreated"),
+    });
+    expect(recreate.statusCode).toBe(200);
+    expect(recreate.json().version).toBe(3);
+  });
+});

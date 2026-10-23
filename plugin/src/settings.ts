@@ -10,6 +10,7 @@ export interface EariSettings {
   deviceId: string;
   lastSeq: number;
   fileIndex: Record<string, { version: number; hash: string }>;
+  deletedSeen: Record<string, number>; // path -> delete version seen from server (tombstones)
   serverCertFingerprint?: string;
 }
 
@@ -25,6 +26,7 @@ export const DEFAULT_SETTINGS: EariSettings = {
   deviceId: "",
   lastSeq: 0,
   fileIndex: {},
+  deletedSeen: {},
 };
 
 export function isConfigured(s: EariSettings): boolean {

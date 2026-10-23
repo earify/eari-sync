@@ -24,7 +24,8 @@ export class SyncEngine {
   private wsReconnectTimer: any = null;
   private wsAttempts = 0;
   private syncing = false;
-  private queued = false;
+  private stopped = false;
+  private chain: Promise<unknown> = Promise.resolve();
   private settings: EariSettings;
   private deps: SyncEngineDeps;
 
@@ -33,10 +34,17 @@ export class SyncEngine {
     this.settings = deps.settings;
     this.api = new ApiClient(this.settings);
     this.watcher = new Watcher(deps.vault, {
-      onChanged: (paths) => this.pushPaths(paths),
-      onDeleted: (paths) => this.pushDeletes(paths),
-      onRenamed: (o, n) => this.pushRename(o, n),
+      onChanged: (paths) => { void this.enqueue(() => this.pushPaths(paths)); },
+      onDeleted: (paths) => { void this.enqueue(() => this.pushDeletes(paths)); },
+      onRenamed: (o, n) => { void this.enqueue(() => this.pushRename(o, n)); },
     }, this.debounceMs());
+  }
+
+  /** serialize all sync operations: watcher pushes never interleave with pulls */
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(() => (this.stopped ? Promise.reject(new Error("stopped")) : fn()));
+    this.chain = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   private debounceMs(): number {
@@ -58,39 +66,40 @@ export class SyncEngine {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     this.watcher.stop(this.deps.vault);
     if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
     if (this.wsReconnectTimer) { clearTimeout(this.wsReconnectTimer); this.wsReconnectTimer = null; }
   }
 
   async syncNow(): Promise<void> {
-    if (this.syncing) { this.queued = true; return; }
-    this.syncing = true;
-    this.deps.onStatus("syncing");
-    try {
-      await this.pullChanges();
-      await this.pushAll();
-      this.settings.lastSeq = this.settings.lastSeq || 0;
-      await this.deps.saveSettings();
-      this.deps.onStatus("done");
-    } catch (e: any) {
-      console.error("sync error", e);
-      if (String(e?.message).includes("401") || String(e).includes("unauthorized")) {
-        this.deps.onStatus("auth", e?.message);
-      } else {
-        this.deps.onStatus("error", e?.message);
+    return this.enqueue(async () => {
+      if (this.syncing) return;
+      this.syncing = true;
+      this.deps.onStatus("syncing");
+      try {
+        await this.pullChanges();
+        await this.pushAll();
+        await this.deps.saveSettings();
+        this.deps.onStatus("done");
+      } catch (e: any) {
+        console.error("sync error", e);
+        if (String(e?.message).includes("401") || String(e).includes("unauthorized")) {
+          this.deps.onStatus("auth", e?.message);
+        } else {
+          this.deps.onStatus("error", e?.message);
+        }
+      } finally {
+        this.syncing = false;
       }
-    } finally {
-      this.syncing = false;
-      if (this.queued) { this.queued = false; this.syncNow(); }
-    }
+    });
   }
 
   private connectWs(): void {
     this.ws = this.api.connectWs(
       (seq) => {
         // pull incremental
-        this.pullSince(seq).catch((e) => console.error("ws pull", e));
+        void this.enqueue(() => this.pullChanges().catch((e) => console.error("ws pull", e)));
       },
       (s) => {
         if (s === "connected") this.deps.onStatus("connected");
@@ -126,10 +135,7 @@ export class SyncEngine {
     }
   }
 
-  private async pullSince(seqHint: number): Promise<void> {
-    // pull incremental changes triggered by ws
-    await this.pullChanges();
-  }
+
 
   private async applyChange(c: RemoteChange): Promise<void> {
     const vault = this.deps.vault;
@@ -138,15 +144,26 @@ export class SyncEngine {
     if (c.op === "delete") {
       const f = vault.getAbstractFileByPath(path);
       if (f) {
-        await vault.trash(f, true); // local trash? use delete to avoid loop? use trash local
+        // move into in-vault .trash (which itself is synced) so deletions stay visible/recoverable
+        this.watcher.markWritten(path);
+        await vault.trash(f, false);
       }
       delete this.settings.fileIndex[path];
+      if (typeof c.version === "number") {
+        this.settings.deletedSeen[path] = c.version;
+      }
       return;
     }
     if (c.op === "move" && c.fromPath) {
       const old = vault.getAbstractFileByPath(c.fromPath);
-      if (old) await vault.trash(old, true);
+      if (old) {
+        this.watcher.markWritten(c.fromPath);
+        await vault.trash(old, false);
+      }
       delete this.settings.fileIndex[c.fromPath];
+      if (typeof c.version === "number") {
+        this.settings.deletedSeen[c.fromPath] = c.version;
+      }
     }
     // create/modify: download
     try {
@@ -161,6 +178,7 @@ export class SyncEngine {
         await vault.createBinary(path, data);
       }
       this.settings.fileIndex[path] = { version, hash };
+      delete this.settings.deletedSeen[path];
     } catch (e) {
       console.error("apply change failed", path, e);
     }
@@ -253,14 +271,52 @@ export class SyncEngine {
   }
 
   private async uploadOne(path: string, data: ArrayBuffer, baseVersion: number, mtime: number, hash: string): Promise<void> {
-    const res = await this.api.upload(path, data, baseVersion, mtime, hash);
+    const seenDelete = this.settings.deletedSeen[path];
+    const res = await this.api.upload(path, data, baseVersion, mtime, hash, seenDelete);
+    if (seenDelete) delete this.settings.deletedSeen[path];
     this.settings.fileIndex[path] = { version: res.version, hash };
     this.watcher.markWritten(path);
   }
 
   private async handleConflict(path: string, info: any): Promise<void> {
     this.deps.onStatus("conflict");
-    // download server version
+    // Case: server has deleted this file but we pushed a stale copy
+    if (info?.deleted) {
+      try {
+        const idx = this.settings.fileIndex[path];
+        const f = this.deps.vault.getAbstractFileByPath(path) as TFile;
+        const clientData = f ? await this.deps.vault.readBinary(f) : null;
+        const clientHash = clientData ? await sha256ArrayBuffer(clientData) : "";
+        const locallyModified = !idx || (clientHash && clientHash !== idx.hash);
+        if (!locallyModified) {
+          // we have no unsynced changes -> accept the deletion
+          this.watcher.markWritten(path);
+          if (f) await this.deps.vault.trash(f, false);
+          delete this.settings.fileIndex[path];
+          if (typeof info.serverVersion === "number") this.settings.deletedSeen[path] = info.serverVersion;
+          await this.deps.saveSettings();
+          return;
+        }
+        // we have unsynced edits -> preserve them as a conflict copy, keep server deletion
+        if (clientData) {
+          const cname = conflictName(path, this.settings.deviceId);
+          this.watcher.markWritten(cname);
+          this.watcher.markWritten(path);
+          await ensureParents(this.deps.vault, cname);
+          await this.deps.vault.createBinary(cname, clientData);
+          if (f) await this.deps.vault.trash(f, false);
+          delete this.settings.fileIndex[path];
+          if (typeof info.serverVersion === "number") this.settings.deletedSeen[path] = info.serverVersion;
+          await this.api.upload(cname, clientData, 0, Date.now(), clientHash).catch(() => {});
+          this.settings.fileIndex[cname] = { version: 1, hash: clientHash };
+          await this.deps.saveSettings();
+        }
+      } catch (e) {
+        console.error("deleted-conflict handling failed", e);
+      }
+      return;
+    }
+    // Normal modify/modify conflict: download server version, keep both
     try {
       const { data: serverData, hash: serverHash, version: serverVersion } = await this.api.download(path);
       // read current local content (client version)

@@ -101,16 +101,18 @@ export class ApiClient {
     };
   }
 
-  async upload(path: string, data: ArrayBuffer, baseVersion: number, mtime: number, hash: string): Promise<{ version: number; seq: number; status: string }> {
+  async upload(path: string, data: ArrayBuffer, baseVersion: number, mtime: number, hash: string, seenDeleteVersion?: number): Promise<{ version: number; seq: number; status: string }> {
+    const extra: Record<string, string> = {
+      "Content-Type": "application/octet-stream",
+      "X-Base-Version": String(baseVersion),
+      "X-Mtime": String(mtime),
+      "X-Hash": hash,
+    };
+    if (seenDeleteVersion) extra["X-Seen-Delete-Version"] = String(seenDeleteVersion);
     const r = await requestUrl({
       url: `${this.base()}/api/v1/vaults/${encodeURIComponent(this.s.vaultId)}/files/${encodePath(path)}`,
       method: "PUT",
-      headers: this.headers({
-        "Content-Type": "application/octet-stream",
-        "X-Base-Version": String(baseVersion),
-        "X-Mtime": String(mtime),
-        "X-Hash": hash,
-      }),
+      headers: this.headers(extra),
       body: data,
       throw: false,
     });
