@@ -210,11 +210,11 @@ class EariSettingTab extends PluginSettingTab {
 
           if (node.isFolder) {
             const parentIncluded = this.isIncluded(node.relPath + "/");
+            const isOpen = this.expanded.has(node.relPath);
             if (node.baseExcluded) {
               setting.setDesc("항상 제외");
               setting.addToggle((t) => t.setValue(false).setDisabled(true));
             } else {
-              const isOpen = this.expanded.has(node.relPath);
               setting.addButton((b) => {
                 b.setButtonText(isOpen ? "▼" : "▶").setTooltip("펼치기/접기");
                 b.onClick(() => { if (isOpen) this.expanded.delete(node.relPath); else this.expanded.add(node.relPath); this.display(); });
