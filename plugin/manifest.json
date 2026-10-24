@@ -1,10 +1,10 @@
 {
   "id": "eari-sync",
   "name": "eari-sync",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minAppVersion": "1.4.0",
-  "description": "Self-hosted Obsidian sync via your own Termux server",
-  "author": "Vibe",
-  "authorUrl": "",
+  "description": "Sync notes across devices in real time using your own self-hosted server",
+  "author": "earify",
+  "authorUrl": "https://github.com/earify",
   "isDesktopOnly": false
 }
