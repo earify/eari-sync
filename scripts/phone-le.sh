@@ -27,7 +27,7 @@ fi
 pkill -f "server/dist/main.js" 2>/dev/null || true
 sleep 1
 
-"$ACME" --issue -d eari.iptime.org --standalone --httpport 8080 --server letsencrypt
+"$ACME" --issue -d eari.iptime.org --standalone --httpport 8888 --server letsencrypt
 if [ $? -ne 0 ]; then
   echo "LE ISSUE FAILED"
   echo LEDONE
