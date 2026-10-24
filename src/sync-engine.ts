@@ -97,20 +97,20 @@ export class SyncEngine {
       this.syncing = true;
       this.stats = { up: 0, down: 0, conflicts: 0 };
       this.deps.onStatus("syncing");
-      onProgress?.("동기화 중… (변경사항 확인)");
+      onProgress?.("checking for changes…");
       try {
         await this.pullChanges();
-        onProgress?.(this.stats.down > 0 ? `변경사항 적용 (↓${this.stats.down})` : "변경사항 없음, 업로드 확인 중…");
+        onProgress?.(this.stats.down > 0 ? `applied (↓${this.stats.down})` : "up to date, checking uploads…");
         await this.pushAll();
         this.pruneTombstones();
         await this.deps.saveSettings();
-        const summary = `완료 — ↓${this.stats.down} · ↑${this.stats.up}` + (this.stats.conflicts ? ` · 충돌 ${this.stats.conflicts}` : "");
+        const summary = `done — ↓${this.stats.down} · ↑${this.stats.up}` + (this.stats.conflicts ? ` · conflicts ${this.stats.conflicts}` : "");
         onProgress?.(summary);
         this.deps.onStatus("done", `↓${this.stats.down} ↑${this.stats.up}`);
       } catch (e) {
         logError("sync error", e);
         const msg = e instanceof Error ? e.message : String(e);
-        onProgress?.(`오류 — ${msg}`);
+        onProgress?.(`error — ${msg}`);
         if (String(msg).includes("401") || String(msg).includes("unauthorized")) {
           this.deps.onStatus("auth", msg);
         } else {

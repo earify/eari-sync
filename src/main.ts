@@ -99,15 +99,15 @@ export default class EariSyncPlugin extends Plugin {
   }
 
   async syncNow(): Promise<void> {
-    if (!this.isConfigured()) { new Notice("eari-sync: 설정을 먼저 입력하세요 (Server URL / Vault ID / Secret)"); return; }
+    if (!this.isConfigured()) { new Notice("eari-sync: enter Server URL, Vault ID and Vault secret first"); return; }
     if (!this.engine) await this.startEngine();
-    if (!this.engine) { new Notice("eari-sync: 엔진 시작 실패"); return; }
-    const notice = new Notice("eari-sync: 동기화 시작…", 0);
+    if (!this.engine) { new Notice("eari-sync: could not start the sync engine"); return; }
+    const notice = new Notice("eari-sync: syncing…", 0);
     try {
       await this.engine.syncNow((msg) => notice.setMessage("eari-sync: " + msg));
       window.setTimeout(() => notice.hide(), 2500);
     } catch (e) {
-      notice.setMessage("eari-sync: 동기화 실패 — " + (e instanceof Error ? e.message : String(e)));
+      notice.setMessage("eari-sync: sync failed — " + (e instanceof Error ? e.message : String(e)));
       window.setTimeout(() => notice.hide(), 5000);
     }
   }
@@ -121,7 +121,7 @@ export default class EariSyncPlugin extends Plugin {
 
 interface ObsNode {
   name: string;
-  relPath: string; // relative to configDir
+  relPath: string; // relative to the configuration folder
   isFolder: boolean;
   children: ObsNode[];
   baseExcluded: boolean;
@@ -130,6 +130,7 @@ interface ObsNode {
 class EariSettingTab extends PluginSettingTab {
   plugin: EariSyncPlugin;
   private expanded = new Set<string>();
+  private treeBox: HTMLElement | null = null;
 
   constructor(app: App, plugin: EariSyncPlugin) {
     super(app, plugin);
@@ -152,13 +153,27 @@ class EariSettingTab extends PluginSettingTab {
     return isExcluded(p, base) || isExcluded(p + "/", base) || rel === "workspace" || rel === "workspace.json" || rel === "workspace-mobile.json";
   }
 
+  /** nearest scrollable ancestor, used to keep the scroll position across re-renders */
+  private scrollParent(): HTMLElement | null {
+    let el: HTMLElement | null = this.containerEl.parentElement;
+    while (el) {
+      if (el.scrollHeight > el.clientHeight + 4) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
   display(): void {
     const { containerEl } = this;
-    containerEl.empty();
-    new Setting(containerEl).setName("일반 설정").setHeading();
+    const scroller = this.scrollParent();
+    const scrollTop = scroller ? scroller.scrollTop : 0;
+    this.treeBox = null;
 
-    new Setting(containerEl).setName("Server URL").setDesc("https://your-ddns:port")
-      .addText((t) => t.setPlaceholder("https://example.iptime.org:8443").setValue(this.plugin.settings.serverUrl)
+    containerEl.empty();
+    new Setting(containerEl).setName("Connection").setHeading();
+
+    new Setting(containerEl).setName("Server URL").setDesc("https://your-server:8443")
+      .addText((t) => t.setPlaceholder("https://example.com:8443").setValue(this.plugin.settings.serverUrl)
         .onChange(async (v) => { this.plugin.settings.serverUrl = v.trim(); await this.plugin.saveSettings(); }));
 
     new Setting(containerEl).setName("Vault ID").addText((t) => t.setValue(this.plugin.settings.vaultId)
@@ -169,22 +184,31 @@ class EariSettingTab extends PluginSettingTab {
       t.setValue(this.plugin.settings.vaultSecret).onChange(async (v) => { this.plugin.settings.vaultSecret = v.trim(); await this.plugin.saveSettings(); });
     });
 
-    new Setting(containerEl).setName("Test connection").addButton((b) => b.setButtonText("Test").onClick(() => { void this.plugin.testConnection(); }));
+    new Setting(containerEl).setName("Test connection")
+      .setDesc("Verify the URL, Vault ID and secret")
+      .addButton((b) => b.setButtonText("Test").onClick(() => { void this.plugin.testConnection(); }));
 
-    new Setting(containerEl).setName("Auto sync").addToggle((t) => t.setValue(this.plugin.settings.autoSync)
-      .onChange(async (v) => { this.plugin.settings.autoSync = v; await this.plugin.saveSettings(); if (v) await this.plugin.startEngine(); else await this.plugin.stopEngine(); }));
+    new Setting(containerEl).setName("Sync now").addButton((b) => b.setButtonText("Sync").onClick(() => { void this.plugin.syncNow(); }));
 
-    new Setting(containerEl).setName("Sync mode").addDropdown((d) => d
-      .addOption("fast", "Fast").addOption("balanced", "Balanced").addOption("saver", "Saver")
-      .setValue(this.plugin.settings.syncMode)
-      .onChange(async (v) => {
-        const mode = v as EariSettings["syncMode"];
-        this.plugin.settings.syncMode = mode;
-        await this.plugin.saveSettings();
-      }));
+    new Setting(containerEl).setName("Behavior").setHeading();
 
-    new Setting(containerEl).setName("최대 파일 크기 (MB, 초과 스킵)")
-      .setDesc("이 크기를 넘는 파일은 메모리 보호를 위해 동기화하지 않습니다")
+    new Setting(containerEl).setName("Auto sync")
+      .setDesc("Sync while Obsidian is open")
+      .addToggle((t) => t.setValue(this.plugin.settings.autoSync)
+        .onChange(async (v) => { this.plugin.settings.autoSync = v; await this.plugin.saveSettings(); if (v) await this.plugin.startEngine(); else await this.plugin.stopEngine(); }));
+
+    new Setting(containerEl).setName("Sync mode")
+      .setDesc("How quickly changes are pushed")
+      .addDropdown((d) => d
+        .addOption("fast", "Fast").addOption("balanced", "Balanced").addOption("saver", "Saver")
+        .setValue(this.plugin.settings.syncMode)
+        .onChange(async (v) => {
+          this.plugin.settings.syncMode = v as EariSettings["syncMode"];
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl).setName("Max file size (MB)")
+      .setDesc("Files larger than this are skipped to protect memory")
       .addText((t) => t.setValue(String(this.plugin.settings.maxFileSizeMB ?? 50))
         .onChange(async (v) => {
           const n = Number(v);
@@ -192,34 +216,36 @@ class EariSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    // ---- .obsidian tree UI ----
-    new Setting(containerEl)
-      .setName("설정 폴더 동기화")
-      .setDesc("끄면 설정 폴더 전체가 동기화되지 않습니다")
+    const cd = this.configDir();
+    new Setting(containerEl).setName(`Sync configuration folder (${cd})`)
+      .setDesc("Off by default. When enabled, pick the items to sync below")
       .addToggle((t) => t.setValue(this.plugin.settings.syncObsidian)
-        .onChange(async (v) => { this.plugin.settings.syncObsidian = v; await this.plugin.saveSettings(); this.display(); }));
+        .onChange(async (v) => {
+          this.plugin.settings.syncObsidian = v;
+          await this.plugin.saveSettings();
+          this.display(); // adds/removes the whole tree section
+        }));
 
     if (this.plugin.settings.syncObsidian) {
-      new Setting(containerEl).setName("동기화 항목 선택").setHeading();
+      new Setting(containerEl).setName("Configuration folder items").setHeading();
       const note = containerEl.createEl("p");
-      note.setText("폴더 ▼ 버튼으로 펼쳐서 항목별 선택. workspace*와 eari-sync 자기 폴더는 항상 제외됩니다.");
+      note.setText("Expand folders with ▶ to select items individually. Workspace files and eari-sync's own folder are always excluded.");
       note.addClass("eari-muted");
-
-      // reserved container: filled asynchronously to keep section order stable
-      const treeBox = containerEl.createDiv();
-      void this.renderObsidianTree(treeBox);
+      this.treeBox = containerEl.createDiv();
+      void this.renderTree();
     }
 
-    // ---- advanced excludes ----
+    new Setting(containerEl).setName("Advanced").setHeading();
+
     new Setting(containerEl)
-      .setName("고급: 추가 제외 패턴 (glob, 한 줄에 하나)")
-      .setDesc("보통은 비워둬도 됩니다. 항상 제외: .git, .DS_Store, Thumbs.db, .eari-sync")
+      .setName("Extra exclude patterns")
+      .setDesc("One glob per line. Optional. Always excluded: .git, .DS_Store, Thumbs.db")
       .addTextArea((t) => t.setValue((this.plugin.settings.excludePatterns ?? []).join("\n"))
         .onChange(async (v) => { this.plugin.settings.excludePatterns = v.split("\n").map((x) => x.trim()).filter(Boolean); await this.plugin.saveSettings(); }));
 
     new Setting(containerEl)
-      .setName("Debug 로그")
-      .setDesc("문제 분석용 상세 로그를 콘솔에 출력합니다")
+      .setName("Debug logging")
+      .setDesc("Print detailed logs to the developer console")
       .addToggle((t) => t.setValue(this.plugin.settings.debug ?? false)
         .onChange(async (v) => {
           this.plugin.settings.debug = v;
@@ -227,12 +253,18 @@ class EariSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl).setName("Sync now").addButton((b) => b.setButtonText("Sync").onClick(() => { void this.plugin.syncNow(); }));
+    containerEl.createEl("p", { text: this.plugin.statusText(), cls: "eari-muted" });
 
-    containerEl.createEl("p", { text: this.plugin.statusText() });
+    // restore scroll position (full re-render on section toggles)
+    if (scroller && scrollTop > 0) {
+      window.requestAnimationFrame(() => { scroller.scrollTop = scrollTop; });
+    }
   }
 
-  private async renderObsidianTree(box: HTMLElement): Promise<void> {
+  /** re-render only the tree so toggling items never scrolls the settings pane */
+  private async renderTree(): Promise<void> {
+    const box = this.treeBox;
+    if (!box) return;
     const cd = this.configDir();
     let entries: DirEntry[] = [];
     try {
@@ -242,7 +274,6 @@ class EariSettingTab extends PluginSettingTab {
     }
     entries = entries.filter((e) => e.path.startsWith(cd + "/"));
 
-    // build tree
     const root: ObsNode = { name: "", relPath: "", isFolder: true, children: [], baseExcluded: false };
     const dirNodes = new Map<string, ObsNode>([["", root]]);
     for (const e of entries) {
@@ -272,9 +303,11 @@ class EariSettingTab extends PluginSettingTab {
 
     box.empty();
     if (root.children.length === 0) {
-      box.createEl("p", { text: "설정 폴더를 찾을 수 없습니다." });
+      box.createEl("p", { text: "Configuration folder not found.", cls: "eari-muted" });
       return;
     }
+
+    const rerender = () => { void this.renderTree(); };
 
     const renderLevel = (nodes: ObsNode[], depth: number, container: HTMLElement): void => {
       const sorted = [...nodes].sort((a, b) => (a.isFolder === b.isFolder ? a.name.localeCompare(b.name) : a.isFolder ? -1 : 1));
@@ -289,17 +322,17 @@ class EariSettingTab extends PluginSettingTab {
           const parentIncluded = this.isIncluded(node.relPath + "/");
           const isOpen = this.expanded.has(node.relPath);
           if (node.baseExcluded) {
-            setting.setDesc("항상 제외");
+            setting.setDesc("Always excluded");
             setting.addToggle((t) => t.setValue(false).setDisabled(true));
           } else {
             setting.addButton((b) => {
-              b.setButtonText(isOpen ? "▼" : "▶").setTooltip("펼치기/접기");
+              b.setButtonText(isOpen ? "▼" : "▶").setTooltip("Expand or collapse");
               b.onClick(() => {
                 if (isOpen) this.expanded.delete(node.relPath); else this.expanded.add(node.relPath);
-                void this.display();
+                rerender();
               });
             });
-            setting.setDesc(parentIncluded ? "폴더 전체 포함됨" : "폴더");
+            setting.setDesc(parentIncluded ? "Whole folder included" : "Folder");
             setting.addToggle((t) => t
               .setValue(parentIncluded)
               .onChange(async (v) => {
@@ -307,13 +340,13 @@ class EariSettingTab extends PluginSettingTab {
                 if (v) inc.add(node.relPath + "/"); else inc.delete(node.relPath + "/");
                 this.plugin.settings.obsidianInclude = Array.from(inc).sort();
                 await this.plugin.saveSettings();
-                void this.display();
+                rerender();
               }));
           }
           if (isOpen && !node.baseExcluded) {
             if (parentIncluded) {
               const hint = wrap.createDiv();
-              hint.setText("전체 포함 중 — 개별 선택하려면 토글을 끄세요");
+              hint.setText("Included as a whole — turn the toggle off to select items individually");
               hint.addClass("eari-hint");
             } else {
               renderLevel(node.children, depth + 1, wrap);
@@ -321,7 +354,7 @@ class EariSettingTab extends PluginSettingTab {
           }
         } else {
           if (node.baseExcluded) {
-            setting.setDesc("항상 제외");
+            setting.setDesc("Always excluded");
             setting.addToggle((t) => t.setValue(false).setDisabled(true));
           } else {
             setting.addToggle((t) => t
