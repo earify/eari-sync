@@ -4,8 +4,13 @@ exec > /sdcard/eari-le.log 2>&1
 set -x
 date
 
-pkg install -y acme.sh socat cronie || true
-command -v crond >/dev/null 2>&1 && (crond 2>/dev/null || true)
+# cron first so acme.sh installer detects crontab (needed for auto-renewal)
+pkg install -y cronie socat || true
+pkill crond 2>/dev/null || true
+sleep 1
+crond
+sleep 1
+command -v crontab && crontab -l 2>/dev/null | head -3 || echo "no crontab yet"
 
 export ACME_HOME="$HOME/.acme.sh"
 ACME="$HOME/.acme.sh/acme.sh"
@@ -16,8 +21,9 @@ fi
 [ -x "$ACME" ] || { echo "NO ACME SH"; echo LEDONE; exit 1; }
 
 "$ACME" --set-default-ca --server letsencrypt
+"$ACME" --install-cronjob >/dev/null 2>&1 || true
 
-# stop server so port 8080 path is free (server uses 8443, but be safe)
+# stop server so the flow is clean (server uses 8443; acme uses 8080)
 pkill -f "server/dist/main.js" 2>/dev/null || true
 sleep 1
 
