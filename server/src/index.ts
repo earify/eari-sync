@@ -59,6 +59,17 @@ export async function buildServer(cfg: RuntimeConfig, db: Db) {
   // health
   app.get("/health", async () => ({ ok: true, time: Date.now() }));
 
+  // public CA distribution (helps new devices trust this server; the cert itself is public)
+  app.get("/ca.crt", async (_req, reply) => {
+    if (!cfg.caCertPath || !existsSync(cfg.caCertPath)) {
+      return reply.code(404).send({ error: "no CA configured" });
+    }
+    const { readFileSync } = await import("node:fs");
+    reply.header("Content-Type", "application/x-x509-ca-cert");
+    reply.header("Content-Disposition", 'attachment; filename="eari-sync-ca.crt"');
+    return reply.send(readFileSync(cfg.caCertPath));
+  });
+
   // auth test — stricter rate limit (brute-force protection)
   app.post("/api/v1/auth/test", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     const vaultId = (req.headers["x-vault-id"] as string) || (req.body as any)?.vaultId;
