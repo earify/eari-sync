@@ -6,7 +6,8 @@ const path = require("path");
 
 (async () => {
   try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(process.env.HOME, "eari-sync-data", "ddns.json"), "utf8"));
+    const raw = fs.readFileSync(path.join(process.env.HOME, "eari-sync-data", "ddns.json"), "utf8").replace(/^\uFEFF/, "").trim();
+    const cfg = JSON.parse(raw);
     const ip = (await (await fetch("https://api.ipify.org")).text()).trim();
     const h = { Authorization: "Bearer " + cfg.token, "Content-Type": "application/json" };
     const r = await fetch(`https://api.cloudflare.com/client/v4/zones/${cfg.zone}/dns_records/${cfg.record}`, { headers: h });
