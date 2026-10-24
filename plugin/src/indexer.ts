@@ -1,14 +1,16 @@
 import { FileSystemAdapter, type Vault, type TFile } from "obsidian";
 import type { EariSettings } from "./settings.js";
 
-/** always excluded, not user-editable */
-export const BASE_EXCLUDES = [
-  ".git/**",
-  ".eari-sync/**",
-  ".obsidian/plugins/eari-sync/**",
-  "**/.DS_Store",
-  "**/Thumbs.db",
-];
+/** always excluded, not user-editable (configDir is filled in per vault) */
+export function baseExcludes(configDir: string): string[] {
+  return [
+    ".git/**",
+    ".eari-sync/**",
+    `${configDir}/plugins/eari-sync/**`,
+    "**/.DS_Store",
+    "**/Thumbs.db",
+  ];
+}
 
 export interface DirEntry {
   path: string; // vault-relative, forward slashes
@@ -25,10 +27,11 @@ export function isExcluded(path: string, patterns: string[]): boolean {
 /** decide whether a vault-relative path should be synced */
 export function isPathSynced(path: string, s: EariSettings): boolean {
   const p = path.replace(/\\/g, "/");
-  if (isExcluded(p, BASE_EXCLUDES)) return false;
-  if (p === ".obsidian" || p.startsWith(".obsidian/")) {
+  if (isExcluded(p, baseExcludes(s.configDir))) return false;
+  const cd = s.configDir || ".obsidian";
+  if (p === cd || p.startsWith(cd + "/")) {
     if (!s.syncObsidian) return false;
-    const rel = p.slice(".obsidian/".length);
+    const rel = p.slice(cd.length + 1);
     // device-specific workspace files stay excluded; workspaces.json (plugin data) is allowed
     if (rel === "workspace" || rel === "workspace.json" || rel === "workspace-mobile.json") return false;
     const inc = s.obsidianInclude ?? [];
@@ -66,9 +69,10 @@ export function listFiles(vault: Vault, s: EariSettings): TFile[] {
  * Desktop: Node fs via FileSystemAdapter. Mobile: adapter.list walk.
  */
 export async function listDirRecursive(vault: Vault, dir: string): Promise<DirEntry[]> {
-  const adapter = vault.adapter as any;
+  const adapter = vault.adapter;
   if (typeof FileSystemAdapter !== "undefined" && adapter instanceof FileSystemAdapter) {
     try {
+      /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument -- Node fs interop; desktop-only path guarded by FileSystemAdapter instanceof check -- @typescript-eslint/no-explicit-any */
       const req = (window as any).require;
       const fs = req?.("fs");
       const pathMod = req?.("path");
@@ -76,8 +80,7 @@ export async function listDirRecursive(vault: Vault, dir: string): Promise<DirEn
         const out: DirEntry[] = [];
         const base = adapter.getBasePath();
         const walk = (abs: string, rel: string): void => {
-          let items: any[];
-          try { items = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
+          const items = fs.readdirSync(abs, { withFileTypes: true });
           for (const it of items) {
             const r = rel ? rel + "/" + it.name : it.name;
             const absChild = pathMod.join(abs, it.name);
@@ -92,24 +95,27 @@ export async function listDirRecursive(vault: Vault, dir: string): Promise<DirEn
         walk(pathMod.join(base, dir), dir);
         return out;
       }
+      /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument -- Node fs interop */
     } catch {
       // fall through to adapter listing
     }
   }
   const out: DirEntry[] = [];
   const walk = async (d: string): Promise<void> => {
-    let res: any;
-    try { res = await adapter.list(d); } catch { return; }
-    for (const f of Object.keys(res.files ?? {})) {
-      out.push({ path: String(f).replace(/\\/g, "/"), isFolder: false });
-    }
-    for (const sub of res.folders ?? []) {
-      const p = String(sub).replace(/\\/g, "/").replace(/\/$/, "");
-      out.push({ path: p, isFolder: true });
-      await walk(p);
+    try {
+      const res = await adapter.list(d);
+      for (const f of Object.keys(res.files)) {
+        out.push({ path: String(f).replace(/\\/g, "/"), isFolder: false });
+      }
+      for (const sub of res.folders) {
+        const pp = String(sub).replace(/\\/g, "/").replace(/\/$/, "");
+        out.push({ path: pp, isFolder: true });
+        await walk(pp);
+      }
+    } catch {
+      // missing or unreadable directory
     }
   };
   await walk(dir);
   return out;
 }
-

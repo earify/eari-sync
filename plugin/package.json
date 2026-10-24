@@ -1,6 +1,6 @@
 {
   "name": "eari-sync-plugin",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "eari-sync Obsidian plugin",
   "main": "main.js",
   "scripts": {
@@ -12,8 +12,10 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "builtin-modules": "^3.3.0",
     "esbuild": "^0.21.0",
-    "typescript": "^5.5.0"
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.2",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.72.0"
   }
 }

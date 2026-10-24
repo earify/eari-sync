@@ -8,6 +8,8 @@ export interface EariSettings {
   syncObsidian: boolean;
   obsidianInclude: string[];
   maxFileSizeMB: number;
+  configDir: string;
+  debug: boolean;
   deviceId: string;
   lastSeq: number;
   fileIndex: Record<string, { version: number; hash: string }>;
@@ -24,6 +26,8 @@ export const DEFAULT_SETTINGS: EariSettings = {
   syncObsidian: false,
   obsidianInclude: [],
   maxFileSizeMB: 50,
+  configDir: ".obsidian",
+  debug: false,
   deviceId: "",
   lastSeq: 0,
   fileIndex: {},

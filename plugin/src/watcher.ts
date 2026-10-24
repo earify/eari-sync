@@ -1,4 +1,4 @@
-import type { Vault } from "obsidian";
+import { TAbstractFile, type EventRef, type Vault } from "obsidian";
 
 export interface WatcherCallbacks {
   onChanged: (paths: string[]) => void;
@@ -11,10 +11,10 @@ export class Watcher {
   private pending = new Set<string>();
   private deleted = new Set<string>();
   private renamed = new Map<string, string>();
-  private timer: any = null;
+  private timer: number | null = null;
   private recentlyWritten = new Map<string, number>(); // path -> expiry ms
-  private recentSweepTimer: any = null;
-  private refs: any[] = [];
+  private recentSweepTimer: number | null = null;
+  private refs: EventRef[] = [];
   private vault: Vault;
   private cb: WatcherCallbacks;
 
@@ -25,13 +25,12 @@ export class Watcher {
   }
 
   start(): void {
-    const v: any = this.vault;
-    this.refs.push(v.on("create", (f: any) => this.queue(f.path)));
-    this.refs.push(v.on("modify", (f: any) => this.queue(f.path)));
-    this.refs.push(v.on("delete", (f: any) => this.queueDelete(f.path)));
-    this.refs.push(v.on("rename", (f: any, oldPath: string) => this.queueRename(oldPath, f.path)));
+    this.refs.push(this.vault.on("create", (f: TAbstractFile) => this.queue(f.path)));
+    this.refs.push(this.vault.on("modify", (f: TAbstractFile) => this.queue(f.path)));
+    this.refs.push(this.vault.on("delete", (f: TAbstractFile) => this.queueDelete(f.path)));
+    this.refs.push(this.vault.on("rename", (f: TAbstractFile, oldPath: string) => this.queueRename(oldPath, f.path)));
     // periodic sweep so the recentlyWritten map cannot grow unbounded
-    this.recentSweepTimer = setInterval(() => {
+    this.recentSweepTimer = window.setInterval(() => {
       const now = Date.now();
       for (const [p, exp] of this.recentlyWritten) {
         if (now > exp) this.recentlyWritten.delete(p);
@@ -42,8 +41,8 @@ export class Watcher {
   stop(vault: Vault): void {
     for (const r of this.refs) vault.offref(r);
     this.refs = [];
-    if (this.timer) clearTimeout(this.timer);
-    if (this.recentSweepTimer) clearInterval(this.recentSweepTimer);
+    if (this.timer !== null) window.clearTimeout(this.timer);
+    if (this.recentSweepTimer !== null) window.clearInterval(this.recentSweepTimer);
   }
 
   markWritten(path: string, ttlMs = 5000): void {
@@ -76,8 +75,8 @@ export class Watcher {
   }
 
   private schedule(): void {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.flush(), this.debounceMs);
+    if (this.timer !== null) window.clearTimeout(this.timer);
+    this.timer = window.setTimeout(() => this.flush(), this.debounceMs);
   }
 
   private flush(): void {
