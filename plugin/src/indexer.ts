@@ -10,13 +10,6 @@ export const BASE_EXCLUDES = [
   "**/Thumbs.db",
 ];
 
-export interface LocalMeta {
-  path: string;
-  size: number;
-  mtime: number;
-  hash: string;
-}
-
 export interface DirEntry {
   path: string; // vault-relative, forward slashes
   isFolder: boolean;
@@ -36,7 +29,8 @@ export function isPathSynced(path: string, s: EariSettings): boolean {
   if (p === ".obsidian" || p.startsWith(".obsidian/")) {
     if (!s.syncObsidian) return false;
     const rel = p.slice(".obsidian/".length);
-    if (rel.startsWith("workspace")) return false; // device-specific, always excluded
+    // device-specific workspace files stay excluded; workspaces.json (plugin data) is allowed
+    if (rel === "workspace" || rel === "workspace.json" || rel === "workspace-mobile.json") return false;
     const inc = s.obsidianInclude ?? [];
     return inc.some((entry) => {
       if (entry.endsWith("/")) return rel.startsWith(entry);
@@ -48,7 +42,7 @@ export function isPathSynced(path: string, s: EariSettings): boolean {
 }
 
 function matchGlob(path: string, pattern: string): boolean {
-  let re = pattern
+  const re = pattern
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
     .replace(/\*\*/g, "::DOUBLE::")
     .replace(/\*/g, "[^/]*")
@@ -119,13 +113,3 @@ export async function listDirRecursive(vault: Vault, dir: string): Promise<DirEn
   return out;
 }
 
-export async function computeMeta(vault: Vault, file: TFile): Promise<LocalMeta> {
-  const content = await vault.readBinary(file);
-  const hash = await sha256ArrayBuf(content);
-  return { path: file.path, size: file.stat.size, mtime: file.stat.mtime, hash };
-}
-
-async function sha256ArrayBuf(buf: ArrayBuffer): Promise<string> {
-  const h = await crypto.subtle.digest("SHA-256", buf);
-  return Array.from(new Uint8Array(h)).map((b) => b.toString(16).padStart(2, "0")).join("");
-}

@@ -1,13 +1,7 @@
 ﻿import { requestUrl } from "obsidian";
 import type { EariSettings } from "./settings.js";
-export interface VaultMeta {
-  vaultId: string;
-  seq: number;
-  fileCount: number;
-  trashCount: number;
-}
 
-// shared types are not bundled; redefine minimal locally
+// protocol types (kept local so the plugin does not depend on the shared workspace package)
 export interface RemoteChange {
   seq: number;
   path: string;
@@ -28,10 +22,38 @@ export interface ChangesResponse {
   currentSeq: number;
 }
 
+export interface VaultMeta {
+  vaultId: string;
+  seq: number;
+  fileCount: number;
+  trashCount: number;
+}
+
+export class ConflictError extends Error {
+  info: any;
+  constructor(info: any) {
+    super("conflict");
+    this.info = info;
+  }
+}
+
 export class ApiClient {
   constructor(private s: EariSettings) {}
 
   update(s: EariSettings): void { this.s = s; }
+
+  private base(): string {
+    return this.s.serverUrl.replace(/\/+$/, "");
+  }
+
+  private headers(extra: Record<string, string> = {}): Record<string, string> {
+    return {
+      Authorization: `Bearer ${this.s.vaultSecret}`,
+      "X-Vault-Id": this.s.vaultId,
+      "X-Client-Id": this.s.deviceId,
+      ...extra,
+    };
+  }
 
   /** request wrapper: retry 429/5xx with backoff (respects server "retry in N seconds") */
   private async req(fn: () => Promise<any>, tries = 4): Promise<any> {
@@ -45,19 +67,6 @@ export class ApiClient {
       await new Promise((res) => setTimeout(res, Math.min(wait, 60000)));
     }
     return last;
-  }
-
-  private base(): string {
-    return this.s.serverUrl.replace(/\/+$/, "");
-  }
-
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    return {
-      Authorization: `Bearer ${this.s.vaultSecret}`,
-      "X-Vault-Id": this.s.vaultId,
-      "X-Client-Id": this.s.deviceId,
-      ...extra,
-    };
   }
 
   async testConnection(): Promise<{ ok: boolean; error?: string }> {
@@ -82,7 +91,7 @@ export class ApiClient {
       method: "GET",
       headers: this.headers(),
       throw: false,
-      }));
+    }));
     if (r.status !== 200) throw new Error(`meta ${r.status}: ${r.text}`);
     return r.json;
   }
@@ -93,7 +102,7 @@ export class ApiClient {
       method: "GET",
       headers: this.headers(),
       throw: false,
-      }));
+    }));
     if (r.status !== 200) throw new Error(`changes ${r.status}: ${r.text}`);
     return r.json;
   }
@@ -104,7 +113,7 @@ export class ApiClient {
       method: "GET",
       headers: this.headers(),
       throw: false,
-      }));
+    }));
     if (r.status !== 200) throw new Error(`download ${r.status}: ${r.text}`);
     return {
       data: r.arrayBuffer,
@@ -129,11 +138,8 @@ export class ApiClient {
       headers: this.headers(extra),
       body: data,
       throw: false,
-      }));
-    if (r.status === 409) {
-      const info = r.json;
-      throw new ConflictError(info);
-    }
+    }));
+    if (r.status === 409) throw new ConflictError(r.json);
     if (r.status !== 200) throw new Error(`upload ${r.status}: ${r.text}`);
     return r.json;
   }
@@ -144,7 +150,7 @@ export class ApiClient {
       method: "DELETE",
       headers: this.headers(),
       throw: false,
-      }));
+    }));
     if (r.status !== 200 && r.status !== 204) throw new Error(`delete ${r.status}: ${r.text}`);
   }
 
@@ -155,36 +161,45 @@ export class ApiClient {
       headers: this.headers({ "Content-Type": "application/json" }),
       body: JSON.stringify({ from, to, baseVersion }),
       throw: false,
-      }));
+    }));
+    if (r.status === 409) throw new ConflictError(r.json);
     if (r.status !== 200) throw new Error(`move ${r.status}: ${r.text}`);
   }
 
   connectWs(onChange: (seq: number) => void, onStatus: (s: string) => void): WebSocket | null {
     try {
-      const url = `${this.base().replace(/^http/, "ws")}/api/v1/vaults/${encodeURIComponent(this.s.vaultId)}/ws?token=${encodeURIComponent(this.s.vaultSecret)}`;
+      const url = `${this.base().replace(/^http/, "ws")}/api/v1/vaults/${encodeURIComponent(this.s.vaultId)}/ws?token=${encodeURIComponent(this.s.vaultSecret)}&cid=${encodeURIComponent(this.s.deviceId)}`;
       const ws = new WebSocket(url);
-      ws.onopen = () => onStatus("connected");
+      let pingTimer: any = null;
+      let lastMsg = Date.now();
+      const clearPing = () => { if (pingTimer) { clearInterval(pingTimer); pingTimer = null; } };
+      ws.onopen = () => {
+        onStatus("connected");
+        lastMsg = Date.now();
+        clearPing();
+        // keepalive: periodic ping + stale-connection detection
+        pingTimer = setInterval(() => {
+          if (Date.now() - lastMsg > 150000) {
+            try { ws.close(); } catch {}
+            return;
+          }
+          try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+        }, 45000);
+      };
       ws.onmessage = (ev) => {
+        lastMsg = Date.now();
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === "change" && typeof msg.seq === "number") onChange(msg.seq);
           if (msg.type === "auth_fail") onStatus("auth");
         } catch {}
       };
-      ws.onclose = () => onStatus("disconnected");
-      ws.onerror = () => onStatus("error");
+      ws.onclose = () => { clearPing(); onStatus("disconnected"); };
+      ws.onerror = () => { /* onclose follows */ };
       return ws;
     } catch {
       return null;
     }
-  }
-}
-
-export class ConflictError extends Error {
-  info: any;
-  constructor(info: any) {
-    super("conflict");
-    this.info = info;
   }
 }
 

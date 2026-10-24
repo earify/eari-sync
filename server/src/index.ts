@@ -3,7 +3,7 @@ import websocket from "@fastify/websocket";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import { join } from "node:path";
-import { createReadStream, existsSync, mkdirSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, rmSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { defaultDataDir, ensureDataDirs, loadConfig, saveConfig, vaultFilesDir, vaultStagingDir, vaultTrashDir, dbPath } from "./config.js";
 import { openDb } from "./db.js";
@@ -17,11 +17,23 @@ import type { RuntimeConfig } from "./config.js";
 
 const WS_CLIENTS = new Map<string, Set<any>>();
 
-function broadcast(vaultId: string, seq: number): void {
+export function cleanupExpiredTrash(db: Db, dataDir: string): number {
+  const rows = db.db.prepare("SELECT rowid AS rid, trash_path FROM trash WHERE expires_at < ?").all(Date.now()) as any[];
+  let n = 0;
+  for (const r of rows) {
+    try { if (r.trash_path && existsSync(r.trash_path)) rmSync(r.trash_path, { force: true }); } catch {}
+    db.db.prepare("DELETE FROM trash WHERE rowid = ?").run(r.rid);
+    n++;
+  }
+  return n;
+}
+
+function broadcast(vaultId: string, seq: number, excludeCid?: string): void {
   const set = WS_CLIENTS.get(vaultId);
   if (!set) return;
   const msg = JSON.stringify({ type: "change", vaultId, seq });
   for (const ws of set) {
+    if (excludeCid && (ws as any).cid === excludeCid) continue;
     try { ws.send(msg); } catch {}
   }
 }
@@ -154,31 +166,31 @@ export async function buildServer(cfg: RuntimeConfig, db: Db) {
       }
     }
 
-    // conflict check
-    if (existing && existing.deleted === 0 && baseVersion && existing.version !== baseVersion) {
-      // if content identical -> idempotent
-      const bodyBuf = req.body as Buffer;
-      const h = sha256Buffer(bodyBuf);
-      if (h !== existing.hash) {
-        return reply.code(409).send({
-          error: "conflict",
-          path,
-          serverVersion: existing.version,
-          serverHash: existing.hash,
-          serverSize: existing.size,
-          serverMtime: existing.mtime,
-          clientVersion: baseVersion,
-        } satisfies any);
-      }
-    }
-
     const bodyBuf = req.body as Buffer;
     if (!Buffer.isBuffer(bodyBuf)) return reply.code(400).send({ error: "expected binary body" });
-    const hash = clientHash || sha256Buffer(bodyBuf);
-    // verify hash matches if client provided
-    if (clientHash && clientHash !== sha256Buffer(bodyBuf)) {
+    const contentHash = sha256Buffer(bodyBuf);
+    if (clientHash && clientHash !== contentHash) {
       return reply.code(400).send({ error: "hash mismatch" });
     }
+
+    // identical content already stored (and not deleted) -> idempotent no-op
+    if (existing && existing.deleted === 0 && existing.hash === contentHash) {
+      return { path, version: existing.version, seq: getSeq(db, vaultId), status: "unchanged" };
+    }
+
+    // conflict check (server has different, newer content)
+    if (existing && existing.deleted === 0 && baseVersion && existing.version !== baseVersion) {
+      return reply.code(409).send({
+        error: "conflict",
+        path,
+        serverVersion: existing.version,
+        serverHash: existing.hash,
+        serverSize: existing.size,
+        serverMtime: existing.mtime,
+        clientVersion: baseVersion,
+      });
+    }
+
 
     const newVersion = (existing?.version ?? 0) + 1;
     const res = await writeAtomic(vdir, path, bodyBuf, mtime);
@@ -205,7 +217,7 @@ export async function buildServer(cfg: RuntimeConfig, db: Db) {
     });
 
     const seq = getSeq(db, vaultId);
-    broadcast(vaultId, seq);
+    broadcast(vaultId, seq, (req.headers["x-client-id"] as string) || "");
     return { path, version: newVersion, seq, status: existing ? "updated" : "created" };
   });
 
@@ -258,7 +270,7 @@ export async function buildServer(cfg: RuntimeConfig, db: Db) {
       });
     });
     const seq = getSeq(db, vaultId);
-    broadcast(vaultId, seq);
+    broadcast(vaultId, seq, (req.headers["x-client-id"] as string) || "");
     return { path, version: newVersion, seq };
   });
 
@@ -275,6 +287,15 @@ export async function buildServer(cfg: RuntimeConfig, db: Db) {
     const existing = getFileRow(db, vaultId, from);
     if (!existing) return reply.code(404).send({ error: "not found" });
     if (getFileRow(db, vaultId, to)) return reply.code(409).send({ error: "destination exists" });
+    if (baseVersion && existing.version !== baseVersion) {
+      // stale move: another device has newer content at the source path
+      return reply.code(409).send({
+        error: "conflict",
+        path: from,
+        serverVersion: existing.version,
+        clientVersion: baseVersion,
+      });
+    }
     const vdir = vaultFilesDir(cfg.dataDir, vaultId);
     moveFilePhysical(vdir, from, to);
     const newVersion = existing.version + 1;
@@ -302,7 +323,7 @@ export async function buildServer(cfg: RuntimeConfig, db: Db) {
       // also record delete of old? move covers it; clients handle move op
     });
     const seq = getSeq(db, vaultId);
-    broadcast(vaultId, seq);
+    broadcast(vaultId, seq, (req.headers["x-client-id"] as string) || "");
     return { from, to, version: newVersion, seq };
   });
 
@@ -341,7 +362,7 @@ export async function buildServer(cfg: RuntimeConfig, db: Db) {
       recordChange(db, vaultId, { path, op: "create", size: row.size, mtime: Date.now(), hash: row.hash, version: newVersion, clientId: (req.headers["x-client-id"] as string) || "" });
     });
     const seq = getSeq(db, vaultId);
-    broadcast(vaultId, seq);
+    broadcast(vaultId, seq, (req.headers["x-client-id"] as string) || "");
     return { path, version: newVersion, seq };
   });
 
@@ -356,6 +377,7 @@ export async function buildServer(cfg: RuntimeConfig, db: Db) {
         socket.close();
         return;
       }
+      (socket as any).cid = (req.query as any).cid || "";
       if (!WS_CLIENTS.has(vaultId)) WS_CLIENTS.set(vaultId, new Set());
       WS_CLIENTS.get(vaultId)!.add(socket);
       socket.send(JSON.stringify({ type: "auth_ok", vaultId, seq: getSeq(db, vaultId) }));

@@ -1,9 +1,8 @@
-﻿import type { Plugin, Vault, TFile } from "obsidian";
+﻿import { TFile, type Plugin, type Vault } from "obsidian";
 import { ApiClient, ConflictError, type RemoteChange } from "./api.js";
 import type { EariSettings } from "./settings.js";
 import { Watcher } from "./watcher.js";
 import { isPathSynced, listFiles, listDirRecursive } from "./indexer.js";
-import { computeMeta } from "./indexer.js";
 import { conflictName } from "./conflict.js";
 import { sha256ArrayBuffer } from "./hash.js";
 import type { SyncStatus } from "./status.js";
@@ -22,12 +21,13 @@ export class SyncEngine {
   private watcher: Watcher;
   private ws: WebSocket | null = null;
   private wsReconnectTimer: any = null;
-  private wsAttempts = 0;
   private wsPullTimer: any = null;
+  private wsAttempts = 0;
   private syncing = false;
   private stopped = false;
   private chain: Promise<unknown> = Promise.resolve();
   private stats = { up: 0, down: 0, conflicts: 0 };
+  private saveTimer: any = null;
   private settings: EariSettings;
   private deps: SyncEngineDeps;
 
@@ -42,6 +42,10 @@ export class SyncEngine {
     }, this.debounceMs());
   }
 
+  private debounceMs(): number {
+    return this.settings.syncMode === "fast" ? 300 : this.settings.syncMode === "saver" ? 1500 : 800;
+  }
+
   /** serialize all sync operations: watcher pushes never interleave with pulls */
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.chain.then(() => (this.stopped ? Promise.reject(new Error("stopped")) : fn()));
@@ -49,8 +53,18 @@ export class SyncEngine {
     return run;
   }
 
-  private debounceMs(): number {
-    return this.settings.syncMode === "fast" ? 300 : this.settings.syncMode === "saver" ? 1500 : 800;
+  /** throttled settings persistence (data.json can be large; avoid rewriting it per file) */
+  private saveSettingsSoon(): void {
+    if (this.saveTimer || this.stopped) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      void this.deps.saveSettings();
+    }, 2000);
+  }
+
+  private flushSave(): void {
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; }
+    void this.deps.saveSettings();
   }
 
   async start(): Promise<void> {
@@ -62,7 +76,6 @@ export class SyncEngine {
     this.watcher.start();
     if (this.settings.autoSync) {
       this.connectWs();
-      // initial sync
       await this.syncNow();
     }
   }
@@ -73,6 +86,7 @@ export class SyncEngine {
     if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
     if (this.wsReconnectTimer) { clearTimeout(this.wsReconnectTimer); this.wsReconnectTimer = null; }
     if (this.wsPullTimer) { clearTimeout(this.wsPullTimer); this.wsPullTimer = null; }
+    this.flushSave();
   }
 
   async syncNow(onProgress?: (msg: string) => void): Promise<void> {
@@ -86,10 +100,11 @@ export class SyncEngine {
         await this.pullChanges();
         onProgress?.(this.stats.down > 0 ? `변경사항 적용 (↓${this.stats.down})` : "변경사항 없음, 업로드 확인 중…");
         await this.pushAll();
+        this.pruneTombstones();
         await this.deps.saveSettings();
         const summary = `완료 — ↓${this.stats.down} · ↑${this.stats.up}` + (this.stats.conflicts ? ` · 충돌 ${this.stats.conflicts}` : "");
         onProgress?.(summary);
-        this.deps.onStatus("done", `â†“${this.stats.down} â†‘${this.stats.up}`);
+        this.deps.onStatus("done", `↓${this.stats.down} ↑${this.stats.up}`);
       } catch (e: any) {
         console.error("sync error", e);
         const msg = e?.message ?? String(e);
@@ -107,7 +122,7 @@ export class SyncEngine {
 
   private connectWs(): void {
     this.ws = this.api.connectWs(
-      (seq) => {
+      () => {
         // coalesce bursts of change notifications into one pull
         if (this.wsPullTimer) return;
         this.wsPullTimer = setTimeout(() => {
@@ -130,12 +145,12 @@ export class SyncEngine {
     this.wsAttempts++;
     this.wsReconnectTimer = setTimeout(() => {
       this.wsReconnectTimer = null;
+      if (this.stopped) return;
       this.connectWs();
     }, delay);
   }
 
   private async pullChanges(): Promise<void> {
-    // pull all since lastSeq
     let since = this.settings.lastSeq || 0;
     let hasMore = true;
     while (hasMore) {
@@ -146,11 +161,9 @@ export class SyncEngine {
       }
       hasMore = res.hasMore;
       this.settings.lastSeq = res.currentSeq;
-      await this.deps.saveSettings();
+      this.saveSettingsSoon();
     }
   }
-
-
 
   /** enumerate .obsidian contents (hidden folder is not in the vault index) */
   private async listObsidianFiles(): Promise<string[]> {
@@ -159,6 +172,34 @@ export class SyncEngine {
     return entries
       .filter((e) => !e.isFolder && isPathSynced(e.path, this.settings))
       .map((e) => e.path);
+  }
+
+  private maxBytes(): number {
+    return Math.max(1, this.settings.maxFileSizeMB ?? 50) * 1024 * 1024;
+  }
+
+  private tooBig(path: string, size: number | undefined): boolean {
+    if (size && size > this.maxBytes()) {
+      console.warn("eari-sync: skipping oversized file", path, size);
+      return true;
+    }
+    return false;
+  }
+
+  private tombstone(path: string, version: number): void {
+    this.settings.deletedSeen[path] = { v: version, t: Date.now() };
+  }
+
+  /** drop tombstones older than 30 days (bounded growth) */
+  private pruneTombstones(): void {
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const ds = this.settings.deletedSeen ?? {};
+    let removed = 0;
+    for (const k of Object.keys(ds)) {
+      const t = typeof ds[k] === "number" ? 0 : ds[k].t;
+      if (t < cutoff) { delete ds[k]; removed++; }
+    }
+    if (removed > 0) console.log("eari-sync: pruned", removed, "tombstones");
   }
 
   private async applyChange(c: RemoteChange): Promise<void> {
@@ -171,13 +212,14 @@ export class SyncEngine {
       this.settings.lastSeq = Math.max(this.settings.lastSeq, c.seq);
       return;
     }
+    if (this.tooBig(path, c.size)) return;
     if (c.op === "delete") {
       if (path.startsWith(".obsidian/")) {
         // hidden folder: remove via adapter (no trash for dotfiles)
         try { await vault.adapter.remove(path); } catch {}
         delete this.settings.fileIndex[path];
-        if (typeof c.version === "number") this.settings.deletedSeen[path] = c.version;
-      this.stats.down++;
+        if (typeof c.version === "number") this.tombstone(path, c.version);
+        this.stats.down++;
         return;
       }
       const f = vault.getAbstractFileByPath(path);
@@ -187,9 +229,7 @@ export class SyncEngine {
         await vault.trash(f, false);
       }
       delete this.settings.fileIndex[path];
-      if (typeof c.version === "number") {
-        this.settings.deletedSeen[path] = c.version;
-      }
+      if (typeof c.version === "number") this.tombstone(path, c.version);
       this.stats.down++;
       return;
     }
@@ -200,13 +240,11 @@ export class SyncEngine {
         await vault.trash(old, false);
       }
       delete this.settings.fileIndex[c.fromPath];
-      if (typeof c.version === "number") {
-        this.settings.deletedSeen[c.fromPath] = c.version;
-      }
+      if (typeof c.version === "number") this.tombstone(c.fromPath, c.version);
     }
     // create/modify: download
     try {
-      const { data, hash, version, mtime } = await this.api.download(path);
+      const { data, hash, version } = await this.api.download(path);
       this.watcher.markWritten(path);
       if (path.startsWith(".obsidian/")) {
         await ensureAdapterParents(vault, path);
@@ -216,7 +254,6 @@ export class SyncEngine {
         if (existing) {
           await vault.modifyBinary(existing as TFile, data);
         } else {
-          // ensure parent folders
           await ensureParents(vault, path);
           await vault.createBinary(path, data);
         }
@@ -224,7 +261,13 @@ export class SyncEngine {
       this.settings.fileIndex[path] = { version, hash };
       this.stats.down++;
       delete this.settings.deletedSeen[path];
-    } catch (e) {
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      // server no longer has it (deleted between listing and download) — skip gracefully
+      if (msg.includes("download 404")) {
+        console.warn("eari-sync: vanished on server, skipping:", path);
+        return;
+      }
       console.error("apply change failed", path, e);
       throw e;
     }
@@ -235,17 +278,16 @@ export class SyncEngine {
     const files = listFiles(vault, this.settings).filter((f) => !f.path.startsWith(".obsidian/"));
     const obsFiles = await this.listObsidianFiles();
     const localPaths = new Set<string>([...files.map((f) => f.path), ...obsFiles]);
-    // push new/changed (indexed files)
+    // push new/changed (indexed files) — single read per file
     for (const f of files) {
       if (this.watcher.isRecentlyWritten(f.path)) continue;
+      if (this.tooBig(f.path, f.stat.size)) continue;
       try {
-        const meta = await computeMeta(vault, f);
-        const idx = this.settings.fileIndex[f.path];
-        if (idx && idx.hash === meta.hash) continue; // unchanged
-        const baseVersion = idx?.version ?? 0;
         const data = await vault.readBinary(f);
         const hash = await sha256ArrayBuffer(data);
-        await this.uploadOne(f.path, data, baseVersion, meta.mtime, hash);
+        const idx = this.settings.fileIndex[f.path];
+        if (idx && idx.hash === hash) continue; // unchanged
+        await this.uploadOne(f.path, data, idx?.version ?? 0, f.stat.mtime, hash);
       } catch (e) {
         if (e instanceof ConflictError) {
           await this.handleConflict(f.path, e.info);
@@ -287,21 +329,20 @@ export class SyncEngine {
     for (const p of paths) {
       if (!isPathSynced(p, this.settings)) continue;
       const f = this.deps.vault.getAbstractFileByPath(p);
-      if (!f) continue;
+      if (!(f instanceof TFile)) continue; // ignore folders
+      if (this.tooBig(p, f.stat.size)) continue;
       try {
-        const meta = await computeMeta(this.deps.vault, f as TFile);
-        const idx = this.settings.fileIndex[p];
-        if (idx && idx.hash === meta.hash) continue;
-        const baseVersion = idx?.version ?? 0;
-        const data = await this.deps.vault.readBinary(f as TFile);
+        const data = await this.deps.vault.readBinary(f);
         const hash = await sha256ArrayBuffer(data);
-        await this.uploadOne(p, data, baseVersion, meta.mtime, hash);
+        const idx = this.settings.fileIndex[p];
+        if (idx && idx.hash === hash) continue;
+        await this.uploadOne(p, data, idx?.version ?? 0, f.stat.mtime, hash);
       } catch (e) {
         if (e instanceof ConflictError) await this.handleConflict(p, (e as ConflictError).info);
         else console.error("push path failed", p, e);
       }
     }
-    await this.deps.saveSettings();
+    this.saveSettingsSoon();
   }
 
   private async pushDeletes(paths: string[]): Promise<void> {
@@ -312,13 +353,15 @@ export class SyncEngine {
       try {
         await this.api.remove(p, idx.version);
         delete this.settings.fileIndex[p];
+        this.stats.up++;
       } catch (e) { console.error("delete push failed", p, e); }
     }
-    await this.deps.saveSettings();
+    this.saveSettingsSoon();
   }
 
   private async pushRename(oldPath: string, newPath: string): Promise<void> {
     if (!this.settings.autoSync) return;
+    const vault = this.deps.vault;
     const idx = this.settings.fileIndex[oldPath];
     const baseVersion = idx?.version ?? 0;
     try {
@@ -327,17 +370,55 @@ export class SyncEngine {
         this.settings.fileIndex[newPath] = idx;
         delete this.settings.fileIndex[oldPath];
       }
-    } catch (e) { console.error("move push failed", e); }
-    await this.deps.saveSettings();
+    } catch (e) {
+      if (e instanceof ConflictError) {
+        // server has newer content at the old path — preserve both:
+        // restore server content at old path, keep our renamed file as a new file
+        try {
+          const { data, hash, version } = await this.api.download(oldPath);
+          this.watcher.markWritten(oldPath);
+          if (oldPath.startsWith(".obsidian/")) {
+            await ensureAdapterParents(vault, oldPath);
+            await vault.adapter.writeBinary(oldPath, data);
+          } else {
+            await ensureParents(vault, oldPath);
+            await vault.createBinary(oldPath, data);
+          }
+          this.settings.fileIndex[oldPath] = { version, hash };
+          const nf = vault.getAbstractFileByPath(newPath);
+          if (nf instanceof TFile) {
+            const data2 = await vault.readBinary(nf);
+            const hash2 = await sha256ArrayBuffer(data2);
+            await this.uploadOne(newPath, data2, 0, nf.stat.mtime, hash2);
+          }
+        } catch (e2) {
+          console.error("move conflict resolution failed", e2);
+        }
+      } else {
+        console.error("move push failed", e);
+      }
+    }
+    this.saveSettingsSoon();
   }
 
   private async uploadOne(path: string, data: ArrayBuffer, baseVersion: number, mtime: number, hash: string): Promise<void> {
-    const seenDelete = this.settings.deletedSeen[path];
+    const tomb = this.settings.deletedSeen[path];
+    const seenDelete = typeof tomb === "object" ? tomb.v : tomb;
     const res = await this.api.upload(path, data, baseVersion, mtime, hash, seenDelete);
     if (seenDelete) delete this.settings.deletedSeen[path];
     this.stats.up++;
     this.settings.fileIndex[path] = { version: res.version, hash };
     this.watcher.markWritten(path);
+  }
+
+  private async uploadNewConflictCopy(cname: string, data: ArrayBuffer, hash: string): Promise<void> {
+    try {
+      const res = await this.api.upload(cname, data, 0, Date.now(), hash);
+      this.settings.fileIndex[cname] = { version: res.version, hash };
+    } catch (e) {
+      // do NOT record in fileIndex — pushAll will retry it as a new file
+      console.warn("eari-sync: conflict copy upload failed (will retry)", cname, e);
+    }
   }
 
   private async handleConflict(path: string, info: any): Promise<void> {
@@ -356,8 +437,8 @@ export class SyncEngine {
           this.watcher.markWritten(path);
           if (f) await this.deps.vault.trash(f, false);
           delete this.settings.fileIndex[path];
-          if (typeof info.serverVersion === "number") this.settings.deletedSeen[path] = info.serverVersion;
-          await this.deps.saveSettings();
+          if (typeof info.serverVersion === "number") this.tombstone(path, info.serverVersion);
+          this.flushSave();
           return;
         }
         // we have unsynced edits -> preserve them as a conflict copy, keep server deletion
@@ -369,10 +450,9 @@ export class SyncEngine {
           await this.deps.vault.createBinary(cname, clientData);
           if (f) await this.deps.vault.trash(f, false);
           delete this.settings.fileIndex[path];
-          if (typeof info.serverVersion === "number") this.settings.deletedSeen[path] = info.serverVersion;
-          await this.api.upload(cname, clientData, 0, Date.now(), clientHash).catch(() => {});
-          this.settings.fileIndex[cname] = { version: 1, hash: clientHash };
-          await this.deps.saveSettings();
+          if (typeof info.serverVersion === "number") this.tombstone(path, info.serverVersion);
+          await this.uploadNewConflictCopy(cname, clientData, clientHash);
+          this.flushSave();
         }
       } catch (e) {
         console.error("deleted-conflict handling failed", e);
@@ -382,7 +462,6 @@ export class SyncEngine {
     // Normal modify/modify conflict: download server version, keep both
     try {
       const { data: serverData, hash: serverHash, version: serverVersion } = await this.api.download(path);
-      // read current local content (client version)
       const f = this.deps.vault.getAbstractFileByPath(path) as TFile;
       const clientData = f ? await this.deps.vault.readBinary(f) : null;
       const clientHash = clientData ? await sha256ArrayBuffer(clientData) : "";
@@ -400,11 +479,9 @@ export class SyncEngine {
         this.watcher.markWritten(cname);
         await ensureParents(this.deps.vault, cname);
         await this.deps.vault.createBinary(cname, clientData);
-        // upload conflict copy as new file
-        await this.api.upload(cname, clientData, 0, Date.now(), clientHash).catch(() => {});
-        this.settings.fileIndex[cname] = { version: 1, hash: clientHash };
+        await this.uploadNewConflictCopy(cname, clientData, clientHash);
       }
-      await this.deps.saveSettings();
+      this.flushSave();
     } catch (e) {
       console.error("conflict handling failed", e);
     }

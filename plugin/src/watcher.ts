@@ -1,4 +1,4 @@
-import type { Vault, TFile, EventRef } from "obsidian";
+import type { Vault } from "obsidian";
 
 export interface WatcherCallbacks {
   onChanged: (paths: string[]) => void;
@@ -13,7 +13,8 @@ export class Watcher {
   private renamed = new Map<string, string>();
   private timer: any = null;
   private recentlyWritten = new Map<string, number>(); // path -> expiry ms
-  private refs: EventRef[] = [];
+  private recentSweepTimer: any = null;
+  private refs: any[] = [];
   private vault: Vault;
   private cb: WatcherCallbacks;
 
@@ -29,12 +30,20 @@ export class Watcher {
     this.refs.push(v.on("modify", (f: any) => this.queue(f.path)));
     this.refs.push(v.on("delete", (f: any) => this.queueDelete(f.path)));
     this.refs.push(v.on("rename", (f: any, oldPath: string) => this.queueRename(oldPath, f.path)));
+    // periodic sweep so the recentlyWritten map cannot grow unbounded
+    this.recentSweepTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [p, exp] of this.recentlyWritten) {
+        if (now > exp) this.recentlyWritten.delete(p);
+      }
+    }, 60000);
   }
 
   stop(vault: Vault): void {
     for (const r of this.refs) vault.offref(r);
     this.refs = [];
     if (this.timer) clearTimeout(this.timer);
+    if (this.recentSweepTimer) clearInterval(this.recentSweepTimer);
   }
 
   markWritten(path: string, ttlMs = 5000): void {
@@ -82,18 +91,5 @@ export class Watcher {
     if (paths.length) this.cb.onChanged(paths);
     if (dels.length) this.cb.onDeleted(dels);
     for (const [o, n] of renames) this.cb.onRenamed(o, n);
-  }
-
-  async stabilize(path: string, checks = 5, intervalMs = 100): Promise<boolean> {
-    // wait until file size stable
-    let last = -1;
-    for (let i = 0; i < checks; i++) {
-      const f = this.vault.getAbstractFileByPath(path);
-      const size = (f as any)?.stat?.size ?? 0;
-      if (size === last && i > 0) return true;
-      last = size;
-      await new Promise((r) => setTimeout(r, intervalMs));
-    }
-    return true;
   }
 }

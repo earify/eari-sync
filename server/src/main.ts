@@ -1,6 +1,6 @@
 import { defaultDataDir, ensureDataDirs, loadConfig, saveConfig } from "./config.js";
 import { openDb } from "./db.js";
-import { buildServer } from "./index.js";
+import { buildServer, cleanupExpiredTrash } from "./index.js";
 import { listVaults } from "./vaults.js";
 import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -14,6 +14,13 @@ async function main() {
   const listenOpts: any = { port: cfg.port, host: cfg.host };
   await app.listen(listenOpts);
   console.log(`eari-sync server listening on ${cfg.host}:${cfg.port} (data: ${dataDir})`);
+
+  // trash retention: clean expired items now, then once a day
+  try { const n = cleanupExpiredTrash(db, dataDir); if (n > 0) console.log("cleaned expired trash:", n); } catch (e) { console.error("trash cleanup failed", e); }
+  const trashTimer = setInterval(() => {
+    try { cleanupExpiredTrash(db, dataDir); } catch (e) { console.error("trash cleanup failed", e); }
+  }, 24 * 60 * 60 * 1000);
+  trashTimer.unref?.();
 
   // plain-HTTP helper that only serves the public CA cert (device onboarding convenience)
   const caHttpPort = Number(process.env.EARI_SYNC_CA_HTTP_PORT ?? 8442);

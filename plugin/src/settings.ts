@@ -7,13 +7,11 @@ export interface EariSettings {
   excludePatterns: string[];
   syncObsidian: boolean;
   obsidianInclude: string[];
-  conflictKeepBoth: boolean;
-  trashRetentionDays: number;
+  maxFileSizeMB: number;
   deviceId: string;
   lastSeq: number;
   fileIndex: Record<string, { version: number; hash: string }>;
-  deletedSeen: Record<string, number>; // path -> delete version seen from server (tombstones)
-  serverCertFingerprint?: string;
+  deletedSeen: Record<string, { v: number; t: number }>; // tombstones: server delete version + time
 }
 
 export const DEFAULT_SETTINGS: EariSettings = {
@@ -25,8 +23,7 @@ export const DEFAULT_SETTINGS: EariSettings = {
   excludePatterns: [],
   syncObsidian: false,
   obsidianInclude: [],
-  conflictKeepBoth: true,
-  trashRetentionDays: 30,
+  maxFileSizeMB: 50,
   deviceId: "",
   lastSeq: 0,
   fileIndex: {},

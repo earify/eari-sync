@@ -1,4 +1,4 @@
-﻿import { Plugin, PluginSettingTab, Setting, Notice, TFile } from "obsidian";
+﻿import { Plugin, PluginSettingTab, Setting, Notice } from "obsidian";
 import { DEFAULT_SETTINGS, type EariSettings } from "./settings.js";
 import { ApiClient } from "./api.js";
 import { SyncEngine } from "./sync-engine.js";
@@ -21,6 +21,7 @@ export default class EariSyncPlugin extends Plugin {
     this.statusEl = this.addStatusBarItem();
     this.statusEl.setText(STATUS_LABELS.idle);
     this.statusEl.addClass("eari-sync-status");
+    this.statusEl.addEventListener("click", () => new Notice(this.statusText()));
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.syncNow() });
     this.addCommand({ id: "test-connection", name: "Test connection", callback: () => this.testConnection() });
@@ -58,6 +59,11 @@ export default class EariSyncPlugin extends Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data ?? {});
     if (!this.settings.fileIndex) this.settings.fileIndex = {};
     if (!this.settings.deletedSeen) this.settings.deletedSeen = {};
+    // migrate legacy tombstone format (number) -> { v, t }
+    for (const k of Object.keys(this.settings.deletedSeen)) {
+      const v: any = (this.settings.deletedSeen as any)[k];
+      if (typeof v === "number") (this.settings.deletedSeen as any)[k] = { v, t: Date.now() };
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -151,6 +157,15 @@ class EariSettingTab extends PluginSettingTab {
 
     new Setting(containerEl).setName("Auto sync").addToggle((t) => t.setValue(this.plugin.settings.autoSync)
       .onChange(async (v) => { this.plugin.settings.autoSync = v; await this.plugin.saveSettings(); if (v) await this.plugin.startEngine(); else await this.plugin.stopEngine(); }));
+
+    new Setting(containerEl).setName("최대 파일 크기 (MB, 초과 스킵)")
+      .setDesc("이 크기를 넘는 파일은 메모리 보호를 위해 동기화하지 않습니다")
+      .addText((t) => t.setValue(String(this.plugin.settings.maxFileSizeMB ?? 50))
+        .onChange(async (v) => {
+          const n = Number(v);
+          this.plugin.settings.maxFileSizeMB = Number.isFinite(n) && n > 0 ? n : 50;
+          await this.plugin.saveSettings();
+        }));
 
     new Setting(containerEl).setName("Sync mode").addDropdown((d) => d
       .addOption("fast", "Fast").addOption("balanced", "Balanced").addOption("saver", "Saver")
