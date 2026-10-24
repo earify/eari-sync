@@ -1,6 +1,6 @@
-﻿{
+{
   "name": "eari-sync",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Sync notes across devices in real time using your own self-hosted server.",
   "main": "main.js",
   "scripts": {
@@ -8,7 +8,11 @@
     "build": "node esbuild.config.mjs production",
     "lint": "eslint src"
   },
-  "keywords": ["obsidian", "sync", "self-hosted"],
+  "keywords": [
+    "obsidian",
+    "sync",
+    "self-hosted"
+  ],
   "author": "earify",
   "license": "MIT",
   "devDependencies": {
