@@ -1,12 +1,23 @@
 ﻿{
   "name": "eari-sync",
-  "version": "0.2.4",
-  "description": "eari-sync Obsidian plugin (server: github.com/earify/eari-sync-server)",
-  "private": true,
+  "version": "0.2.5",
+  "description": "Sync notes across devices in real time using your own self-hosted server.",
+  "main": "main.js",
   "scripts": {
-    "build": "node plugin/esbuild.config.mjs production",
-    "dev": "node plugin/esbuild.config.mjs",
-    "lint": "eslint plugin/src"
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "lint": "eslint src"
   },
-  "license": "MIT"
+  "keywords": ["obsidian", "sync", "self-hosted"],
+  "author": "earify",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.21.0",
+    "eslint": "^9.0.0",
+    "eslint-plugin-obsidianmd": "^0.1.0",
+    "obsidian": "latest",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.0.0"
+  }
 }

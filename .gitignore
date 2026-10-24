@@ -1,6 +1,6 @@
 ﻿node_modules/
-plugin/main.js
-plugin/*.map
+main.js
+main.js.map
 release/
 *.tsbuildinfo
 scr.png
