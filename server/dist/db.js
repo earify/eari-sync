@@ -1,8 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-
-
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS vaults (
@@ -54,42 +52,43 @@ CREATE TABLE IF NOT EXISTS trash (
   PRIMARY KEY (vault_id, path, deleted_at)
 );
 `;
-
 export class Db {
-  public readonly db: DatabaseSync;
-  constructor(path: string) {
-    const dir = dirname(path);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    this.db = new DatabaseSync(path);
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA foreign_keys = ON");
-    this.db.exec(SCHEMA);
-    const v = this.db.prepare("SELECT version FROM schema_version LIMIT 1").get() as any;
-    if (!v) this.db.prepare("INSERT INTO schema_version(version) VALUES (1)").run();
-  }
-
-  close(): void {
-    this.db.close();
-  }
-
-  transaction<T>(fn: () => T): T {
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const r = fn();
-      this.db.exec("COMMIT");
-      return r;
-    } catch (e) {
-      try { this.db.exec("ROLLBACK"); } catch {}
-      throw e;
+    db;
+    constructor(path) {
+        const dir = dirname(path);
+        if (!existsSync(dir))
+            mkdirSync(dir, { recursive: true });
+        this.db = new DatabaseSync(path);
+        this.db.exec("PRAGMA journal_mode = WAL");
+        this.db.exec("PRAGMA foreign_keys = ON");
+        this.db.exec(SCHEMA);
+        const v = this.db.prepare("SELECT version FROM schema_version LIMIT 1").get();
+        if (!v)
+            this.db.prepare("INSERT INTO schema_version(version) VALUES (1)").run();
     }
-  }
-
-  integrityCheck(): boolean {
-    const row = this.db.prepare("PRAGMA integrity_check").get() as any;
-    return row && (row.integrity_check === "ok" || Object.values(row)[0] === "ok");
-  }
+    close() {
+        this.db.close();
+    }
+    transaction(fn) {
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            const r = fn();
+            this.db.exec("COMMIT");
+            return r;
+        }
+        catch (e) {
+            try {
+                this.db.exec("ROLLBACK");
+            }
+            catch { }
+            throw e;
+        }
+    }
+    integrityCheck() {
+        const row = this.db.prepare("PRAGMA integrity_check").get();
+        return row && (row.integrity_check === "ok" || Object.values(row)[0] === "ok");
+    }
 }
-
-export function openDb(dataDir: string): Db {
-  return new Db(`${dataDir}/database/eari-sync.sqlite`);
+export function openDb(dataDir) {
+    return new Db(`${dataDir}/database/eari-sync.sqlite`);
 }

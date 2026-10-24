@@ -137,7 +137,7 @@ class EariSettingTab extends PluginSettingTab {
   }
 
   private configDir(): string {
-    return this.app.vault.configDir || ".obsidian";
+    return this.app.vault.configDir;
   }
 
   private isIncluded(rel: string): boolean {

@@ -74,7 +74,7 @@ export class SyncEngine {
       await this.deps.saveSettings();
     }
     this.api.update(this.settings);
-    this.settings.configDir = this.deps.vault.configDir || ".obsidian";
+    this.settings.configDir = this.deps.vault.configDir;
     this.watcher.start();
     if (this.settings.autoSync) {
       this.connectWs();
@@ -170,14 +170,14 @@ export class SyncEngine {
   /** enumerate .obsidian contents (hidden folder is not in the vault index) */
   private async listObsidianFiles(): Promise<string[]> {
     if (!this.settings.syncObsidian) return [];
-    const entries = await listDirRecursive(this.deps.vault, this.settings.configDir || ".obsidian");
+    const entries = await listDirRecursive(this.deps.vault, this.settings.configDir);
     return entries
       .filter((e) => !e.isFolder && isPathSynced(e.path, this.settings))
       .map((e) => e.path);
   }
 
   private cfgPrefix(): string {
-    return (this.settings.configDir || ".obsidian") + "/";
+    return this.settings.configDir + "/";
   }
 
   private maxBytes(): number {
@@ -252,7 +252,7 @@ export class SyncEngine {
     try {
       const { data, hash, version } = await this.api.download(path);
       this.watcher.markWritten(path);
-      if (path.startsWith(".obsidian/")) {
+      if (path.startsWith(this.cfgPrefix())) {
         await ensureAdapterParents(vault, path);
         await vault.adapter.writeBinary(path, data);
       } else {

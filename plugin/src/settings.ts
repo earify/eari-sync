@@ -26,7 +26,7 @@ export const DEFAULT_SETTINGS: EariSettings = {
   syncObsidian: false,
   obsidianInclude: [],
   maxFileSizeMB: 50,
-  configDir: ".obsidian",
+  configDir: "",
   debug: false,
   deviceId: "",
   lastSeq: 0,

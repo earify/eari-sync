@@ -1,78 +1,58 @@
-# eari-sync
+# eari-sync (Obsidian plugin)
 
-Self-hosted, real-time-ish Obsidian sync. Server runs on an Android phone (Termux); clients are Obsidian plugins (Windows/Android/iPadOS). No external cloud.
+Self-hosted, near-real-time sync for Obsidian vaults — Windows, Android and iPadOS.
 
-## Status
+The plugin talks to **your own server** (no cloud, no tunnels, no third-party backend):
 
-M1 (scaffold + shared types) and M2 (server core) complete and tested. M3 (plugin) implemented and builds. M4 (integration/packaging) in progress.
+- Server: [earify/eari-sync-server](https://github.com/earify/eari-sync-server) — runs in Termux on an Android phone.
 
-## Layout
+## Features
 
-- `shared/` — protocol types
-- `server/` — Termux Node.js server (Fastify + node:sqlite)
-- `plugin/` — Obsidian plugin (TypeScript + esbuild)
-- `docs/` — documentation
-- `scripts/` — helpers
+- Auto sync while Obsidian is open (file events + WebSocket change notifications)
+- Incremental, hash-based transfer (only changed files move)
+- Conflict copies instead of silent overwrites (`name.conflict-<device>-<time>`)
+- Deletions propagate and stay recoverable in the vault's trash folder
+- Optional settings-folder sync with per-item selection (theme, hotkeys, plugins, snippets, …)
+- Per-device trash/workspace files are always excluded
+- Sync modes (fast / balanced / saver), exclude patterns, max file size
 
-## Quick setup (for everyone)
+## Setup
 
-### Server (Android/Termux) — one command
-```bash
-pkg install -y git
-git clone <repo-url> $HOME/eari-sync
-cd $HOME/eari-sync
-bash scripts/setup-termux.sh
+1. Install and start the server — see the [server repository](https://github.com/earify/eari-sync-server).
+2. In Obsidian: **Settings → Community plugins → eari-sync** (or install manually from a release).
+3. Enter three values:
+   - **Server URL** — e.g. `https://sync.example.com:8443`
+   - **Vault ID**
+   - **Vault secret**
+4. Press **Test connection**, then **Sync now**.
+
+## Manual install
+
+Copy `main.js`, `manifest.json`, `styles.css` from a release into:
+
 ```
-Then start: `node server/dist/main.js` (keep awake with `termux-wake-lock`).
-
-### Plugin (Windows/macOS/Linux)
-```powershell
-# from repo root, after build:
-.\scripts\install-plugin.ps1 -VaultPath "C:\path\to\your\vault"
-```
-Or run `scripts/build-release.ps1` and extract `release/eari-sync-plugin.zip` into `<vault>/.obsidian/plugins/eari-sync/`.
-
-### Configure
-In Obsidian plugin settings: Server URL (`https://your-ddns:8443`), Vault ID, Vault Secret (from `init` output). Press "Test connection".
-
-## Quick start (server, dev)
-
-```bash
-npm install
-npm run build -w shared
-npm run build -w server
-node server/dist/cli.js init --vault myvault
-node server/dist/cli.js doctor
-node server/dist/main.js
+<your vault>/.obsidian/plugins/eari-sync/
 ```
 
-Server listens on 0.0.0.0:8443 by default (HTTP unless TLS cert configured).
+Then enable the plugin in Obsidian.
 
-## HTTPS
+## Commands
 
-Set `EARI_SYNC_CERT`, `EARI_SYNC_KEY` (and optionally `EARI_SYNC_CA`) env vars, or `certPath`/`keyPath` in `~/eari-sync-data/config/server.json`. See `docs/https-setup.md`.
+- `eari-sync: Sync now`
+- `eari-sync: Test connection`
+- `eari-sync: Show sync status`
+- `eari-sync: Retry failed items`
 
-## Plugin build
+## Development
 
 ```bash
 cd plugin
 npm install
-node esbuild.config.mjs production
-# produces main.js, manifest.json, styles.css
+npm run dev      # watch build
+npm run build    # production build -> plugin/main.js
+npx eslint src   # official Obsidian review rules
 ```
 
-Install into Obsidian vault's `.obsidian/plugins/eari-sync/`.
+## License
 
-## Tests
-
-```bash
-npm run test -w server
-```
-
-## Docs
-
-- `docs/roadmap.md`
-- `docs/https-setup.md`
-- `docs/termux-install.md`
-- `docs/troubleshooting.md`
-- `docs/security.md`
+MIT

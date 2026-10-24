@@ -1,17 +1,12 @@
-{
+﻿{
   "name": "eari-sync",
-  "version": "0.1.0",
+  "version": "0.2.4",
+  "description": "eari-sync Obsidian plugin (server: github.com/earify/eari-sync-server)",
   "private": true,
-  "description": "Personal Obsidian sync system: Termux server + Obsidian plugin",
-  "workspaces": [
-    "shared",
-    "server",
-    "plugin"
-  ],
   "scripts": {
-    "build": "npm run build -w shared && npm run build -w server && npm run build -w plugin",
-    "test": "npm run test -w server",
-    "lint": "npm run lint -w server && npm run lint -w plugin"
+    "build": "node plugin/esbuild.config.mjs production",
+    "dev": "node plugin/esbuild.config.mjs",
+    "lint": "eslint plugin/src"
   },
   "license": "MIT"
 }

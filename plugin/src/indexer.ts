@@ -12,6 +12,20 @@ export function baseExcludes(configDir: string): string[] {
   ];
 }
 
+interface DirentLike {
+  name: string;
+  isDirectory(): boolean;
+  isFile(): boolean;
+}
+
+interface FsLike {
+  readdirSync(path: string, options: { withFileTypes: true }): DirentLike[];
+}
+
+interface PathLike {
+  join(...parts: string[]): string;
+}
+
 export interface DirEntry {
   path: string; // vault-relative, forward slashes
   isFolder: boolean;
@@ -28,7 +42,7 @@ export function isExcluded(path: string, patterns: string[]): boolean {
 export function isPathSynced(path: string, s: EariSettings): boolean {
   const p = path.replace(/\\/g, "/");
   if (isExcluded(p, baseExcludes(s.configDir))) return false;
-  const cd = s.configDir || ".obsidian";
+  const cd = s.configDir;
   if (p === cd || p.startsWith(cd + "/")) {
     if (!s.syncObsidian) return false;
     const rel = p.slice(cd.length + 1);
@@ -72,15 +86,15 @@ export async function listDirRecursive(vault: Vault, dir: string): Promise<DirEn
   const adapter = vault.adapter;
   if (typeof FileSystemAdapter !== "undefined" && adapter instanceof FileSystemAdapter) {
     try {
-      /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument -- Node fs interop; desktop-only path guarded by FileSystemAdapter instanceof check -- @typescript-eslint/no-explicit-any */
-      const req = (window as any).require;
-      const fs = req?.("fs");
-      const pathMod = req?.("path");
-      if (fs && pathMod) {
+      // Electron exposes require only in the desktop renderer (guarded by the FileSystemAdapter check above)
+      const req = (window as unknown as { require?: (id: string) => unknown }).require;
+      const fsMod = req?.("fs") as FsLike | undefined;
+      const pathMod = req?.("path") as PathLike | undefined;
+      if (fsMod && pathMod) {
         const out: DirEntry[] = [];
         const base = adapter.getBasePath();
         const walk = (abs: string, rel: string): void => {
-          const items = fs.readdirSync(abs, { withFileTypes: true });
+          const items = fsMod.readdirSync(abs, { withFileTypes: true });
           for (const it of items) {
             const r = rel ? rel + "/" + it.name : it.name;
             const absChild = pathMod.join(abs, it.name);
@@ -95,7 +109,6 @@ export async function listDirRecursive(vault: Vault, dir: string): Promise<DirEn
         walk(pathMod.join(base, dir), dir);
         return out;
       }
-      /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument -- Node fs interop */
     } catch {
       // fall through to adapter listing
     }
