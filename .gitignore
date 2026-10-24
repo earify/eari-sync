@@ -12,3 +12,5 @@ eari-ca.crt
 .DS_Store
 Thumbs.db
 scr.png
+scripts/ddns.local.json
+scr.png
