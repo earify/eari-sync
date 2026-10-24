@@ -1,0 +1,10 @@
+{
+  "id": "eari-sync",
+  "name": "eari-sync",
+  "version": "0.2.2",
+  "minAppVersion": "1.4.0",
+  "description": "Sync notes across devices in real time using your own self-hosted server",
+  "author": "earify",
+  "authorUrl": "https://github.com/earify",
+  "isDesktopOnly": false
+}
